@@ -1,0 +1,73 @@
+# Environment variables & secrets
+.env
+.env.*
+*.env
+
+# Python & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Vector Stores
+vector_db/
+**/vector_db/
+chroma/
+**/chroma/
+
+# Audio / Video downloads & uploads
+downloades/
+**/downloades/
+uploads/
+**/uploads/
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.webm
+
+# Node / Frontend
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+frontend/dist/
+dist/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local agent artifacts & logs
+.agents/

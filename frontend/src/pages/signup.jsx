@@ -28,6 +28,13 @@ function Signup() {
   };
 
   const getErrorMessage = (err) => {
+    if (!err.response) {
+      if (err.message === "Network Error" || err.code === "ERR_NETWORK") {
+        return "Cannot connect to server. Please ensure the backend is running at http://127.0.0.1:8000.";
+      }
+      return err.message || "Network error. Please ensure the backend server is running.";
+    }
+
     const detail = err.response?.data?.detail;
 
     if (Array.isArray(detail)) {
@@ -39,18 +46,25 @@ function Signup() {
       return detail;
     }
 
+    if (err.response?.data?.message) {
+      return err.response.data.message;
+    }
+
     return "Signup failed. Please check your details.";
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!name.trim()) {
+    const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanName) {
       setError("Please enter your full name.");
       return;
     }
 
-    if (!email.includes("@")) {
+    if (!cleanEmail.includes("@")) {
       setError("Please enter a valid email address.");
       return;
     }
@@ -66,7 +80,7 @@ function Signup() {
       setLoading(true);
       setError("");
 
-      await signup(name, email, password);
+      await signup(cleanName, cleanEmail, password);
 
       navigate("/login");
     } catch (err) {

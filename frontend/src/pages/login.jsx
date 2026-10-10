@@ -22,6 +22,13 @@ function Login() {
   const [error, setError] = useState("");
 
   const getErrorMessage = (err) => {
+    if (!err.response) {
+      if (err.message === "Network Error" || err.code === "ERR_NETWORK") {
+        return "Cannot connect to server. Please ensure the backend is running at http://127.0.0.1:8000.";
+      }
+      return err.message || "Network error. Please ensure the backend server is running.";
+    }
+
     const detail = err.response?.data?.detail;
 
     if (Array.isArray(detail)) {
@@ -31,6 +38,10 @@ function Login() {
 
     if (typeof detail === "string") {
       return detail;
+    }
+
+    if (err.response?.data?.message) {
+      return err.response.data.message;
     }
 
     return "Login failed. Please check your email and password.";
@@ -43,7 +54,7 @@ function Login() {
       setLoading(true);
       setError("");
 
-      await login(email, password);
+      await login(email.trim().toLowerCase(), password);
 
       navigate("/dashboard");
     } catch (err) {

@@ -1,14 +1,52 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import { jsPDF } from "jspdf";
 
 import Sidebar from "../components/Sidebar";
 import { useAuth } from "../context/AuthContext";
 import API from "../api/api";
 import lensLogo from "../assets/lenslogo.png";
 
+function parseTranscriptSegments(rawText) {
+  if (!rawText) return [];
+  const lines = rawText.split("\n");
+  const segments = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Matches: [00:15] Speaker 1: text OR [00:15] John: text OR [00:15] text
+    const match = trimmed.match(/^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(?:([^:\n]+):)?\s*(.*)$/);
+    if (match) {
+      segments.push({
+        timestamp: match[1],
+        speaker: match[2]?.trim() || null,
+        text: match[3]?.trim() || "",
+      });
+    } else {
+      const spkMatch = trimmed.match(/^([A-Za-z0-9\s_-]{2,20}):\s+(.*)$/);
+      if (spkMatch) {
+        segments.push({
+          timestamp: null,
+          speaker: spkMatch[1].trim(),
+          text: spkMatch[2].trim(),
+        });
+      } else {
+        segments.push({
+          timestamp: null,
+          speaker: null,
+          text: trimmed,
+        });
+      }
+    }
+  }
+  return segments;
+}
+
 function Dashboard() {
-  const { user, logout } = useAuth();
+  const { user, logout, authLoading } = useAuth();
   const navigate = useNavigate();
 
   const [darkMode, setDarkMode] = useState(() => {
@@ -29,13 +67,29 @@ function Dashboard() {
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState("");
 
+  const [copied, setCopied] = useState(false);
+  const [transcriptFilter, setTranscriptFilter] = useState("");
+
   useEffect(() => {
     localStorage.setItem("lensai_dark_mode", darkMode);
   }, [darkMode]);
 
+  useEffect(() => {
+    if (!authLoading && !user) {
+      navigate("/login");
+    }
+  }, [user, authLoading, navigate]);
+
   const fetchMeetings = async () => {
-    const res = await API.get("/meetings/");
-    setMeetings(res.data);
+    try {
+      const res = await API.get("/meetings/");
+      setMeetings(res.data);
+    } catch (err) {
+      if (err.response?.status === 401) {
+        logout();
+        navigate("/login");
+      }
+    }
   };
 
   useEffect(() => {
@@ -57,43 +111,41 @@ function Dashboard() {
   };
 
   const loadMeeting = async (meetingId, view = "summary") => {
-    const meetingRes = await API.get(`/meetings/${meetingId}`);
-    setSelectedMeeting(meetingRes.data);
+    try {
+      const meetingRes = await API.get(`/meetings/${meetingId}`);
+      setSelectedMeeting(meetingRes.data);
 
-    const chatRes = await API.get(`/meetings/${meetingId}/chats`);
-    setChats(chatRes.data);
+      const chatRes = await API.get(`/meetings/${meetingId}/chats`);
+      setChats(chatRes.data);
 
-    setActiveView(view === "chat" ? "summary" : view);
-    setError("");
+      setActiveView(view === "chat" ? "summary" : view);
+      setError("");
+    } catch {
+      setError("Failed to load meeting details");
+    }
   };
 
   const handleDeleteMeeting = async (meetingId) => {
     const confirmDelete = window.confirm(
       "Are you sure you want to delete this meeting?"
     );
-
     if (!confirmDelete) return;
 
     try {
       await API.delete(`/meetings/${meetingId}`);
-
       if (selectedMeeting?.id === meetingId) {
         handleNewMeeting();
       }
-
       await fetchMeetings();
     } catch {
       setError("Failed to delete meeting");
     }
   };
+
   const handleRenameMeeting = async (meetingId, title) => {
     try {
-      await API.patch(`/meetings/${meetingId}/rename`, {
-        title,
-      });
-
+      await API.patch(`/meetings/${meetingId}/rename`, { title });
       await fetchMeetings();
-
       if (selectedMeeting && selectedMeeting.id === meetingId) {
         await loadMeeting(meetingId);
       }
@@ -116,7 +168,6 @@ function Dashboard() {
 
       await fetchMeetings();
       await loadMeeting(res.data.meeting_id, "summary");
-
       setSource("");
     } catch (err) {
       setError(err.response?.data?.detail || "Failed to process meeting");
@@ -125,35 +176,241 @@ function Dashboard() {
     }
   };
 
+  // Real-time Streaming AI Chat
   const handleAskQuestion = async () => {
-    if (!question.trim() || !selectedMeeting) return;
+    if (!question.trim() || !selectedMeeting || asking) return;
 
     const userQuestion = question;
+    const tempChatId = "temp-" + Date.now();
 
     try {
       setAsking(true);
       setError("");
       setQuestion("");
 
-      const res = await API.post(`/meetings/${selectedMeeting.id}/ask`, {
-        question: userQuestion,
-      });
+      // Optimistically show user message and empty assistant reply
+      setChats((prev) => [
+        ...prev,
+        {
+          id: tempChatId,
+          question: userQuestion,
+          answer: "",
+          created_at: new Date().toISOString(),
+        },
+      ]);
 
-      setChats((prev) => [...prev, res.data]);
+      const token = localStorage.getItem("token");
+      const baseUrl = API.defaults.baseURL || "http://127.0.0.1:8000";
+      const response = await fetch(
+        `${baseUrl}/meetings/${selectedMeeting.id}/ask/stream`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ question: userQuestion }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let streamText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        streamText += chunk;
+
+        setChats((prev) =>
+          prev.map((c) =>
+            c.id === tempChatId ? { ...c, answer: streamText } : c
+          )
+        );
+      }
 
       await fetchMeetings();
-    } catch {
-      setError("Failed to get answer");
+    } catch (err) {
+      setError("Failed to get answer: " + (err.message || "Network error"));
+      setChats((prev) => prev.filter((c) => c.id !== tempChatId));
       setQuestion(userQuestion);
     } finally {
       setAsking(false);
     }
   };
 
-  const filteredMeetings = meetings.filter((meeting) => {
-    const text = `${meeting.title || ""} ${meeting.source || ""}`.toLowerCase();
-    return text.includes(searchQuery.toLowerCase());
-  });
+  // Markdown Export generator
+  const generateMeetingMarkdown = () => {
+    if (!selectedMeeting) return "";
+    const dateStr = selectedMeeting.created_at
+      ? new Date(selectedMeeting.created_at).toLocaleString()
+      : new Date().toLocaleString();
+
+    let md = `# ${selectedMeeting.title || "Meeting Notes"}\n\n`;
+    md += `**Date:** ${dateStr}  \n`;
+    md += `**Source:** ${selectedMeeting.source}  \n\n`;
+    md += `---\n\n`;
+
+    md += `## 📋 Summary\n\n${selectedMeeting.summary || "No summary available."}\n\n`;
+
+    if (selectedMeeting.action_items?.length) {
+      md += `## ✅ Action Items\n\n`;
+      selectedMeeting.action_items.forEach((item) => {
+        md += `- [ ] ${item}\n`;
+      });
+      md += `\n`;
+    }
+
+    if (selectedMeeting.key_decisions?.length) {
+      md += `## 🎯 Key Decisions\n\n`;
+      selectedMeeting.key_decisions.forEach((item) => {
+        md += `- ${item}\n`;
+      });
+      md += `\n`;
+    }
+
+    if (selectedMeeting.open_questions?.length) {
+      md += `## ❓ Open Questions\n\n`;
+      selectedMeeting.open_questions.forEach((item) => {
+        md += `- ${item}\n`;
+      });
+      md += `\n`;
+    }
+
+    if (selectedMeeting.transcript) {
+      md += `## 🎙️ Transcript\n\n${selectedMeeting.transcript}\n`;
+    }
+
+    return md;
+  };
+
+  const handleCopyMarkdown = async () => {
+    const md = generateMeetingMarkdown();
+    if (!md) return;
+    await navigator.clipboard.writeText(md);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  // PDF Export using jsPDF
+  const handleDownloadPdf = () => {
+    if (!selectedMeeting) return;
+    const doc = new jsPDF({
+      unit: "pt",
+      format: "letter",
+    });
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 45;
+    const maxLineWidth = pageWidth - margin * 2;
+    let cursorY = margin + 15;
+
+    const checkPageBreak = (neededHeight) => {
+      if (cursorY + neededHeight > pageHeight - margin) {
+        doc.addPage();
+        cursorY = margin + 15;
+      }
+    };
+
+    // Brand & Title
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.setTextColor(30, 30, 45);
+    const titleLines = doc.splitTextToSize(selectedMeeting.title || "Meeting Notes", maxLineWidth);
+    checkPageBreak(titleLines.length * 24);
+    doc.text(titleLines, margin, cursorY);
+    cursorY += titleLines.length * 24 + 4;
+
+    // Subtitle / Date
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 135);
+    const dateStr = selectedMeeting.created_at ? new Date(selectedMeeting.created_at).toLocaleString() : "";
+    doc.text(`LensAI Meeting Intelligence  •  ${dateStr}`, margin, cursorY);
+    cursorY += 15;
+    doc.text(`Source: ${selectedMeeting.source.slice(0, 85)}`, margin, cursorY);
+    cursorY += 18;
+
+    // Divider Line
+    doc.setDrawColor(215, 215, 230);
+    doc.setLineWidth(1);
+    doc.line(margin, cursorY, pageWidth - margin, cursorY);
+    cursorY += 22;
+
+    const addSection = (heading, content, isList = false) => {
+      checkPageBreak(35);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(124, 77, 255);
+      doc.text(heading, margin, cursorY);
+      cursorY += 16;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(50, 50, 65);
+
+      if (isList && Array.isArray(content)) {
+        if (content.length === 0) {
+          checkPageBreak(16);
+          doc.text("None recorded", margin + 10, cursorY);
+          cursorY += 16;
+        } else {
+          content.forEach((item) => {
+            const itemLines = doc.splitTextToSize(`•  ${item}`, maxLineWidth - 10);
+            checkPageBreak(itemLines.length * 14 + 4);
+            doc.text(itemLines, margin + 10, cursorY);
+            cursorY += itemLines.length * 14 + 4;
+          });
+        }
+        cursorY += 12;
+      } else if (typeof content === "string") {
+        const plainText = content.replace(/^#+\s+/gm, "");
+        const lines = doc.splitTextToSize(plainText, maxLineWidth);
+        checkPageBreak(lines.length * 14);
+        doc.text(lines, margin, cursorY);
+        cursorY += lines.length * 14 + 14;
+      }
+    };
+
+    addSection("EXECUTIVE SUMMARY", selectedMeeting.summary);
+    addSection("ACTION ITEMS", selectedMeeting.action_items, true);
+    addSection("KEY DECISIONS", selectedMeeting.key_decisions, true);
+    addSection("OPEN QUESTIONS", selectedMeeting.open_questions, true);
+
+    const safeFilename = (selectedMeeting.title || "meeting_notes")
+      .replace(/[^a-z0-9]/gi, "_")
+      .toLowerCase()
+      .slice(0, 35);
+    doc.save(`${safeFilename}.pdf`);
+  };
+
+  const filteredMeetings = useMemo(() => {
+    return meetings.filter((meeting) => {
+      const text = `${meeting.title || ""} ${meeting.source || ""}`.toLowerCase();
+      return text.includes(searchQuery.toLowerCase());
+    });
+  }, [meetings, searchQuery]);
+
+  const parsedTranscript = useMemo(() => {
+    return parseTranscriptSegments(selectedMeeting?.transcript || "");
+  }, [selectedMeeting?.transcript]);
+
+  const filteredTranscript = useMemo(() => {
+    if (!transcriptFilter.trim()) return parsedTranscript;
+    const q = transcriptFilter.toLowerCase();
+    return parsedTranscript.filter(
+      (s) =>
+        s.text.toLowerCase().includes(q) ||
+        (s.speaker && s.speaker.toLowerCase().includes(q)) ||
+        (s.timestamp && s.timestamp.includes(q))
+    );
+  }, [parsedTranscript, transcriptFilter]);
 
   const isYoutube =
     source.includes("youtube.com") || source.includes("youtu.be");
@@ -164,7 +421,6 @@ function Dashboard() {
         darkMode ? "bg-[#0A0A12] text-[#F5F3FF]" : "bg-[#F6F3FB] text-[#1B1B2A]"
       }`}
     >
-      {/* ambient glows, matching the login/signup soft background treatment */}
       <div className="pointer-events-none absolute -left-24 -top-20 h-[420px] w-[420px] rounded-full bg-[#7C4DFF]/20 blur-3xl" />
       <div className="pointer-events-none absolute right-0 top-1/3 h-[380px] w-[380px] rounded-full bg-[#FF7A59]/15 blur-3xl" />
       <div className="pointer-events-none absolute bottom-0 left-1/3 h-[300px] w-[300px] rounded-full bg-[#B355FF]/10 blur-3xl" />
@@ -185,11 +441,11 @@ function Dashboard() {
       />
 
       <main className="relative z-10 flex flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-end gap-3 px-8 py-6">
+        <header className="flex items-center justify-end gap-3 px-8 py-5">
           <button
             onClick={() => setDarkMode(!darkMode)}
             title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
-            className={`flex h-11 w-11 items-center justify-center rounded-full border text-lg transition ${
+            className={`flex h-10 w-10 items-center justify-center rounded-full border text-base transition ${
               darkMode
                 ? "border-[#2A2E3A] bg-[#14141F] hover:border-[#7C4DFF]"
                 : "border-[#E7E2F5] bg-white shadow-sm hover:border-[#7C4DFF]"
@@ -200,10 +456,12 @@ function Dashboard() {
 
           <div
             className={`flex items-center gap-3 rounded-full py-1.5 pl-1.5 pr-4 shadow-sm ${
-              darkMode ? "bg-[#14141F] border border-[#2A2E3A]" : "bg-white border border-[#E7E2F5]"
+              darkMode
+                ? "bg-[#14141F] border border-[#2A2E3A]"
+                : "bg-white border border-[#E7E2F5]"
             }`}
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-[#7C4DFF] to-[#FF7A59] text-sm font-bold text-white">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#7C4DFF] to-[#FF7A59] text-xs font-bold text-white">
               {user?.name?.[0]?.toUpperCase() || "U"}
             </div>
             <div className="leading-tight">
@@ -221,7 +479,6 @@ function Dashboard() {
                   darkMode ? "border-[#2A2E3A] bg-[#12151D]" : "border-[#E7E2F5] bg-white"
                 }`}
               >
-                {/* left brand panel, mirrors the login/signup split layout */}
                 <div className="hidden flex-col justify-between bg-gradient-to-br from-[#7C4DFF] to-[#FF7A59] p-8 md:flex">
                   <img
                     src={lensLogo}
@@ -231,12 +488,11 @@ function Dashboard() {
 
                   <div>
                     <h2 className="text-2xl font-black leading-tight text-white">
-                      What should we bring into focus today?
+                      Bring any meeting or video into focus.
                     </h2>
                     <p className="mt-3 text-sm text-white/80">
-                      Drop in a YouTube link or a recording path and LensAI
-                      will transcribe it, summarize it, and stay around to
-                      answer questions.
+                      Paste a YouTube URL or a local media path. LensAI instantly extracts captions,
+                      transcribes audio with Whisper, attributes speakers, and equips an interactive assistant.
                     </p>
                   </div>
 
@@ -246,7 +502,6 @@ function Dashboard() {
                   </div>
                 </div>
 
-                {/* right input panel */}
                 <div className="p-8">
                   <div className="mb-6 flex items-center gap-2 md:hidden">
                     <img
@@ -277,9 +532,9 @@ function Dashboard() {
                   <p className="mt-2 text-xs text-slate-500">
                     {source
                       ? isYoutube
-                        ? "YouTube video detected"
-                        : "Meeting file/path detected"
-                      : "Supports YouTube links and local meeting paths"}
+                        ? "⚡ YouTube detected (uses instant caption fast-path if available)"
+                        : "Meeting audio/video file detected"
+                      : "Supports YouTube links and local recording files"}
                   </p>
 
                   <div className="mt-5 flex items-center gap-3">
@@ -305,7 +560,7 @@ function Dashboard() {
                     disabled={!source.trim() || processing}
                     className="mt-6 w-full rounded-xl bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] py-3.5 text-sm font-semibold text-white shadow-[0_0_25px_rgba(124,77,255,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {processing ? "Processing..." : "Process meeting"}
+                    {processing ? "Processing meeting..." : "Process meeting"}
                   </button>
 
                   {processing && (
@@ -317,13 +572,11 @@ function Dashboard() {
                       }`}
                     >
                       <h3 className="mb-1 text-sm font-semibold">
-                        {isYoutube
-                          ? "Your YouTube video is being processed..."
-                          : "Your meeting recording is being processed..."}
+                        Analyzing and processing...
                       </h3>
                       <p className="text-xs leading-5">
-                        Extracting audio, transcribing speech, and building
-                        AI memory. This may take a few minutes.
+                        Fetching transcript, identifying speakers, generating summary,
+                        and building vector knowledge base. This may take a moment.
                       </p>
                     </div>
                   )}
@@ -340,41 +593,85 @@ function Dashboard() {
 
           {selectedMeeting && activeView !== "home" && (
             <div className="flex h-full flex-col gap-5 overflow-hidden lg:flex-row">
-              {/* left rail: meeting meta + vertical tab switcher */}
+              {/* Left Rail: meeting meta, export actions, tabs */}
               <div
-                className={`flex shrink-0 flex-col gap-4 rounded-2xl border p-5 lg:w-64 ${
+                className={`flex shrink-0 flex-col justify-between gap-4 rounded-2xl border p-5 lg:w-72 ${
                   darkMode ? "border-[#2A2E3A] bg-[#12151D]" : "border-[#E7E2F5] bg-white"
                 }`}
               >
-                <div>
-                  <h1 className="text-xl font-black leading-tight tracking-tight">
-                    {selectedMeeting.title}
-                  </h1>
-                  <p className="mt-1 truncate text-xs text-slate-500">
-                    {selectedMeeting.source}
-                  </p>
+                <div className="space-y-4">
+                  <div>
+                    <h1 className="text-lg font-black leading-tight tracking-tight">
+                      {selectedMeeting.title}
+                    </h1>
+                    <p className="mt-1 truncate text-xs text-slate-500">
+                      {selectedMeeting.source}
+                    </p>
+                  </div>
+
+                  {/* Export Buttons */}
+                  <div className="flex flex-col gap-2 pt-2 border-t border-inherit">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      Export Notes
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleCopyMarkdown}
+                        className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+                          copied
+                            ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-400"
+                            : darkMode
+                            ? "bg-[#0A0A12] border-[#2A2E3A] hover:border-[#7C4DFF]"
+                            : "bg-[#F6F3FB] border-[#E7E2F5] hover:border-[#7C4DFF]"
+                        }`}
+                        title="Copy complete markdown meeting minutes to clipboard"
+                      >
+                        {copied ? "✅ Copied" : "📋 Copy MD"}
+                      </button>
+
+                      <button
+                        onClick={handleDownloadPdf}
+                        className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+                          darkMode
+                            ? "bg-[#0A0A12] border-[#2A2E3A] text-[#B355FF] hover:border-[#B355FF]"
+                            : "bg-[#F6F3FB] border-[#E7E2F5] text-[#7C4DFF] hover:border-[#7C4DFF]"
+                        }`}
+                        title="Download structured PDF document"
+                      >
+                        📄 PDF
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tab Switcher */}
+                  <div className="flex flex-row gap-2 pt-2 border-t border-inherit lg:flex-col">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1 hidden lg:block">
+                      Views
+                    </span>
+                    {["summary", "transcript"].map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setActiveView(tab)}
+                        className={`rounded-xl px-4 py-2.5 text-left text-sm font-semibold capitalize transition ${
+                          activeView === tab
+                            ? "bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-white shadow-sm"
+                            : darkMode
+                            ? "bg-[#0A0A12] text-slate-300 hover:bg-[#181B26]"
+                            : "bg-[#F6F3FB] text-slate-700 hover:bg-[#EDE8F7]"
+                        }`}
+                      >
+                        {tab === "summary" ? "📋 Insights & Summary" : "🎙️ Full Transcript"}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="flex flex-row gap-2 lg:flex-col">
-                  {["summary", "transcript"].map((tab) => (
-                    <button
-                      key={tab}
-                      onClick={() => setActiveView(tab)}
-                      className={`rounded-xl px-4 py-2.5 text-left text-sm font-semibold capitalize transition ${
-                        activeView === tab
-                          ? "bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-white"
-                          : darkMode
-                          ? "bg-[#0A0A12] text-slate-300"
-                          : "bg-[#F6F3FB] text-slate-700"
-                      }`}
-                    >
-                      {tab}
-                    </button>
-                  ))}
+                <div className="text-[11px] text-slate-500">
+                  Meeting ID #{selectedMeeting.id}
                 </div>
               </div>
 
-              {/* right: content + chat */}
+              {/* Right Main Content */}
               <div
                 className={`flex-1 overflow-y-auto rounded-2xl border p-6 ${
                   darkMode
@@ -392,12 +689,12 @@ function Dashboard() {
                       }`}
                     >
                       <div
-                        className={`space-y-5 
-                        [&_h1]:mb-4 [&_h1]:text-2xl [&_h1]:font-bold
-                        [&_h2]:mb-3 [&_h2]:mt-7 [&_h2]:text-xl [&_h2]:font-bold
-                        [&_h3]:mt-5 [&_h3]:text-lg [&_h3]:font-semibold
+                        className={`space-y-4 
+                        [&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-black
+                        [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-lg [&_h2]:font-bold [&_h2]:text-[#7C4DFF]
+                        [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold
                         [&_p]:text-sm [&_p]:leading-7
-                        [&_ul]:list-disc [&_ul]:pl-6 [&_li]:mb-2 [&_li]:text-sm`}
+                        [&_ul]:list-disc [&_ul]:pl-6 [&_li]:mb-1.5 [&_li]:text-sm`}
                       >
                         <ReactMarkdown>
                           {selectedMeeting.summary || "No summary available."}
@@ -428,91 +725,155 @@ function Dashboard() {
                   </div>
                 )}
 
+                {/* Timestamped & Diarized Transcript View */}
                 {activeView === "transcript" && (
-                  <pre className="whitespace-pre-wrap font-sans text-sm leading-7">
-                    {selectedMeeting.transcript}
-                  </pre>
+                  <div className="space-y-4">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-inherit">
+                      <div>
+                        <h2 className="text-base font-bold">Transcript & Dialogue</h2>
+                        <p className="text-xs text-slate-500">
+                          {parsedTranscript.length} timestamped speech segments
+                        </p>
+                      </div>
+
+                      <input
+                        type="text"
+                        value={transcriptFilter}
+                        onChange={(e) => setTranscriptFilter(e.target.value)}
+                        placeholder="Search dialogue or speaker..."
+                        className={`w-full sm:w-64 px-3.5 py-1.5 text-xs rounded-xl border outline-none transition ${
+                          darkMode
+                            ? "bg-[#0A0A12] border-[#2A2E3A] text-white placeholder:text-slate-600 focus:border-[#7C4DFF]"
+                            : "bg-white border-[#E7E2F5] text-slate-800 placeholder:text-slate-400 focus:border-[#7C4DFF]"
+                        }`}
+                      />
+                    </div>
+
+                    {filteredTranscript.length === 0 ? (
+                      <p className="py-8 text-center text-sm text-slate-500">
+                        {parsedTranscript.length === 0
+                          ? "No transcript text available for this meeting."
+                          : "No dialogue matches your search query."}
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {filteredTranscript.map((seg, idx) => (
+                          <div
+                            key={idx}
+                            className={`p-3.5 rounded-xl border transition ${
+                              darkMode
+                                ? "bg-[#0A0A12] border-[#2A2E3A]/60 hover:border-[#7C4DFF]/40"
+                                : "bg-[#F6F3FB] border-[#E7E2F5] hover:border-[#7C4DFF]/40"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                              {seg.timestamp && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-[#7C4DFF]/15 text-[#9E7BFF] border border-[#7C4DFF]/30">
+                                  ⏱️ {seg.timestamp}
+                                </span>
+                              )}
+                              {seg.speaker && (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-gradient-to-r from-[#FF7A59]/15 to-[#B355FF]/15 text-[#FF7A59] border border-[#FF7A59]/30">
+                                  👤 {seg.speaker}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm leading-relaxed text-inherit font-sans">
+                              {seg.text}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
 
+                {/* Real-time Streaming Chat Window */}
                 <div
                   className={`mt-8 rounded-2xl border p-5 ${
                     darkMode ? "border-[#2A2E3A] bg-[#0A0A12]" : "border-[#E7E2F5] bg-[#F6F3FB]"
                   }`}
                 >
-                  <h2 className="mb-4 text-lg font-bold">
-                    Chat about this meeting
-                  </h2>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="text-base font-bold flex items-center gap-2">
+                      <span>💬</span> Chat with this meeting
+                    </h2>
+                    <span className="text-[11px] text-slate-500">
+                      ⚡ Answers stream in real-time
+                    </span>
+                  </div>
 
-                  <div className="space-y-5">
+                  <div className="space-y-4 max-h-[460px] overflow-y-auto pr-1">
                     {chats.length === 0 ? (
-                      <p className="text-sm text-slate-500">
-                        Ask your first question about this meeting.
+                      <p className="py-4 text-center text-sm text-slate-500">
+                        Ask a question about this meeting's decisions, topics, or action items.
                       </p>
                     ) : (
                       chats.map((chat) => (
-                        <div key={chat.id} className="space-y-3">
-                          <div className="ml-auto max-w-[72%] rounded-2xl bg-gradient-to-r from-[#7C4DFF] to-[#B355FF] px-5 py-3 text-sm leading-6 text-white">
-                            <p className="mb-1 text-xs text-white/70">You</p>
-                            {chat.question}
+                        <div key={chat.id} className="space-y-2">
+                          <div className="ml-auto max-w-[78%] rounded-2xl bg-gradient-to-r from-[#7C4DFF] to-[#B355FF] px-4 py-2.5 text-sm leading-6 text-white shadow-sm">
+                            <p className="mb-0.5 text-[10px] text-white/70 font-semibold uppercase tracking-wider">You</p>
+                            <p>{chat.question}</p>
                           </div>
 
                           <div
-                            className={`max-w-[78%] rounded-2xl px-5 py-4 text-sm leading-7 ${
+                            className={`max-w-[85%] rounded-2xl px-5 py-3 text-sm leading-7 shadow-sm ${
                               darkMode
-                                ? "bg-[#12151D] text-slate-100"
-                                : "bg-white text-slate-800"
+                                ? "bg-[#12151D] text-slate-100 border border-[#2A2E3A]"
+                                : "bg-white text-slate-800 border border-[#E7E2F5]"
                             }`}
                           >
-                            <p className="mb-1 text-xs font-semibold text-[#B355FF]">
-                              LensAI
+                            <p className="mb-1 text-[11px] font-bold text-[#B355FF] flex items-center gap-1">
+                              <span>🤖</span> LensAI Assistant
                             </p>
-                            {chat.answer}
+                            {chat.answer ? (
+                              <div className="[&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:mb-1 [&_strong]:text-[#FF7A59]">
+                                <ReactMarkdown>{chat.answer}</ReactMarkdown>
+                              </div>
+                            ) : (
+                              <span className="italic text-slate-400">
+                                Thinking<span className="animate-pulse">...</span>
+                              </span>
+                            )}
                           </div>
                         </div>
                       ))
                     )}
 
-                    {asking && (
-                      <div
-                        className={`max-w-[78%] rounded-2xl px-5 py-4 text-sm ${
-                          darkMode
-                            ? "bg-[#12151D] text-slate-100"
-                            : "bg-white text-slate-800"
-                        }`}
-                      >
-                        <p className="mb-1 text-xs font-semibold text-[#B355FF]">
-                          LensAI
-                        </p>
-                        Thinking<span className="animate-pulse">...</span>
+                    {asking && chats[chats.length - 1]?.answer && (
+                      <div className="text-xs text-slate-400 animate-pulse pl-2">
+                        Streaming response...
                       </div>
                     )}
                   </div>
 
-                  <div className="mt-5 flex items-center gap-3">
-                    <button
-                      onClick={handleAskQuestion}
-                      disabled={!question.trim() || asking}
-                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-white shadow-md transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-                      title="Send"
-                    >
-                      {asking ? "..." : "➤"}
-                    </button>
-
+                  <div className="mt-4 flex items-center gap-2.5">
                     <input
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
                           handleAskQuestion();
                         }
                       }}
+                      disabled={asking}
                       placeholder="Ask questions about this meeting..."
-                      className={`flex-1 rounded-xl border px-4 py-3 text-sm outline-none transition ${
+                      className={`flex-1 rounded-xl border px-4 py-2.5 text-sm outline-none transition ${
                         darkMode
                           ? "border-[#2A2E3A] bg-[#12151D] text-white placeholder:text-slate-500 focus:border-[#7C4DFF]"
-                          : "border-[#E7E2F5] bg-white text-slate-900 placeholder:text-slate-500 shadow-sm focus:border-[#7C4DFF] focus:ring-2 focus:ring-[#7C4DFF]/20"
+                          : "border-[#E7E2F5] bg-white text-slate-900 placeholder:text-slate-400 shadow-sm focus:border-[#7C4DFF]"
                       }`}
                     />
+
+                    <button
+                      onClick={handleAskQuestion}
+                      disabled={!question.trim() || asking}
+                      className="flex h-10 px-4 shrink-0 items-center justify-center gap-1 rounded-xl bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-sm font-semibold text-white shadow-md transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Send question"
+                    >
+                      {asking ? "..." : "Ask ➤"}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -537,6 +898,17 @@ function InfoCard({ darkMode, title, icon, items }) {
     }
   }
 
+  const [checkedState, setCheckedState] = useState({});
+
+  const toggleCheck = (idx) => {
+    setCheckedState((prev) => ({
+      ...prev,
+      [idx]: !prev[idx],
+    }));
+  };
+
+  const isCheckable = title.toLowerCase().includes("action");
+
   return (
     <div
       className={`rounded-2xl border p-5 shadow-sm ${
@@ -545,18 +917,46 @@ function InfoCard({ darkMode, title, icon, items }) {
           : "border-[#E7E2F5] bg-white"
       }`}
     >
-      <div className="mb-4 flex items-center gap-2">
-        <span>{icon}</span>
-        <h3 className="font-bold">{title}</h3>
+      <div className="mb-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span>{icon}</span>
+          <h3 className="font-bold text-sm">{title}</h3>
+        </div>
+        <span className="text-[11px] font-semibold text-slate-400">
+          {parsedItems.length}
+        </span>
       </div>
 
       {parsedItems.length === 0 ? (
-        <p className="text-sm text-slate-500">None</p>
+        <p className="text-xs text-slate-500">None recorded</p>
       ) : (
-        <ul className="space-y-2 text-sm leading-6">
-          {parsedItems.map((item, index) => (
-            <li key={index}>• {item}</li>
-          ))}
+        <ul className="space-y-2 text-xs leading-5">
+          {parsedItems.map((item, index) => {
+            const isChecked = !!checkedState[index];
+            return (
+              <li
+                key={index}
+                onClick={isCheckable ? () => toggleCheck(index) : undefined}
+                className={`flex items-start gap-2 ${
+                  isCheckable ? "cursor-pointer select-none" : ""
+                }`}
+              >
+                {isCheckable ? (
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    onChange={() => toggleCheck(index)}
+                    className="mt-0.5 rounded text-[#7C4DFF] focus:ring-0 cursor-pointer"
+                  />
+                ) : (
+                  <span className="text-[#7C4DFF] mt-0.5">•</span>
+                )}
+                <span className={isChecked ? "line-through text-slate-400" : ""}>
+                  {item}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

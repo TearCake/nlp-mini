@@ -1,20 +1,23 @@
+import json
+import os
+import shutil
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-import json
 
 from database.database import get_db
 from models.models import User, Meeting
 from auth.auth import get_current_user
 from main import run_pipeline
-from pydantic import BaseModel
-
 
 
 router = APIRouter(prefix="/meetings", tags=["Meetings"])
 
+
 class RenameMeetingRequest(BaseModel):
     title: str
+
+
 class MeetingRequest(BaseModel):
     source: str
     language: str = "english"
@@ -26,7 +29,7 @@ def process_meeting(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Step 1: create empty meeting first
+    # Step 1: create initial meeting record
     new_meeting = Meeting(
         user_id=current_user.id,
         source=req.source
@@ -38,12 +41,20 @@ def process_meeting(
 
     meeting_id = str(new_meeting.id)
 
-    # Step 2: run AI pipeline
-    result = run_pipeline(
-        source=req.source,
-        language=req.language,
-        meeting_id=meeting_id
-    )
+    # Step 2: run AI pipeline safely
+    try:
+        result = run_pipeline(
+            source=req.source,
+            language=req.language,
+            meeting_id=meeting_id
+        )
+    except Exception as e:
+        db.delete(new_meeting)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process meeting: {str(e)}"
+        )
 
     # Step 3: save result in DB
     new_meeting.title = result["title"]
@@ -125,6 +136,7 @@ def get_single_meeting(
         "created_at": meeting.created_at,
     }
 
+
 @router.delete("/{meeting_id}")
 def delete_meeting(
     meeting_id: int,
@@ -142,34 +154,44 @@ def delete_meeting(
 
     if not meeting:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Meeting not found"
         )
+
+    # Clean up ChromaDB directory on disk if it exists
+    vector_dir = os.path.join("vector_db", str(meeting_id))
+    if os.path.exists(vector_dir):
+        shutil.rmtree(vector_dir, ignore_errors=True)
 
     db.delete(meeting)
     db.commit()
 
     return {"message": "Meeting deleted successfully"}
 
+
 @router.patch("/{meeting_id}/rename")
 def rename_meeting(
     meeting_id: int,
     data: RenameMeetingRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     meeting = (
         db.query(Meeting)
-        .filter(Meeting.id == meeting_id)
+        .filter(
+            Meeting.id == meeting_id,
+            Meeting.user_id == current_user.id
+        )
         .first()
     )
 
     if not meeting:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Meeting not found"
         )
 
-    meeting.title = data.title
+    meeting.title = data.title.strip()
     db.commit()
 
     return {

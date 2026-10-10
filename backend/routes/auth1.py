@@ -56,8 +56,6 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
             detail="Email already registered"
         )
     
-    print("Password length:", len(req.password.encode("utf-8")))
-    print("Password:", repr(req.password))
 
     new_user = User(
         name=req.name,

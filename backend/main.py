@@ -1,6 +1,14 @@
+import sys
 from dotenv import load_dotenv
-from utils.audio_processor import process_input
-from core.transcriber import transcribe_all
+
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+from utils.audio_processor import process_input, fetch_youtube_transcript_fast, cleanup_files
+from core.transcriber import transcribe_all, diarize_transcript
 from core.extractor import extract_meeting_insights
 from core.rag_engine import build_rag_chain, ask_questions
 
@@ -8,21 +16,42 @@ load_dotenv()
 
 
 def run_pipeline(source: str, language: str = "english", meeting_id: str = None) -> dict:
-    print("Starting AI Video Assistant")
+    print(f"Starting AI Video Assistant pipeline for meeting [{meeting_id}]...")
 
-    chunks = process_input(source)
+    transcript = None
 
-    transcript = transcribe_all(chunks, language)
-    print(f"Raw transcription first 300 characters: {transcript[:300]}")
+    # Step 1: Fast-path for YouTube URLs (if existing captions/subtitles are available)
+    if (source.startswith("http://") or source.startswith("https://")) and language.lower() == "english":
+        print("Checking YouTube captions fast-path...")
+        try:
+            fast_transcript = fetch_youtube_transcript_fast(source)
+            if fast_transcript:
+                print("⚡ Subtitles fetched instantly via YouTube Captions Fast-Path!")
+                transcript = diarize_transcript(fast_transcript)
+        except Exception as e:
+            print(f"Fast-path check failed ({e}), proceeding with Whisper audio pipeline...")
 
+    # Step 2: Fallback to audio download/extraction + Whisper/Sarvam transcription
+    if not transcript:
+        chunks, to_cleanup = process_input(source)
+        try:
+            transcript = transcribe_all(chunks, language)
+        finally:
+            cleanup_files(to_cleanup)
+
+    print(f"Transcript ready ({len(transcript)} chars). Generating meeting insights...")
+
+    # Step 3: Extract structured insights (Title, Summary, Action items, Key decisions, Questions)
     insights = extract_meeting_insights(transcript)
 
-    title = insights["title"]
-    summary = insights["summary"]
-    action_items = insights["action_items"]
-    key_decisions = insights["key_decisions"]
-    open_questions = insights["open_questions"]
+    title = insights.get("title", "Meeting Workspace")
+    summary = insights.get("summary", "")
+    action_items = insights.get("action_items", [])
+    key_decisions = insights.get("key_decisions", [])
+    open_questions = insights.get("open_questions", [])
 
+    # Step 4: Index into vector store for RAG chat
+    print(f"Indexing transcript into vector store for meeting [{meeting_id}]...")
     build_rag_chain(transcript, meeting_id)
 
     return {
@@ -44,15 +73,15 @@ if __name__ == "__main__":
     result = run_pipeline(source, language, meeting_id)
 
     print("\n" + "=" * 60)
-    print(f"📌 Meeting ID: {result['meeting_id']}")
-    print(f"📌 Title: {result['title']}")
-    print(f"\n📋 Summary:\n{result['summary']}")
-    print(f"\n✅ Action Items:\n{result['action_items']}")
-    print(f"\n🔑 Key Decisions:\n{result['key_decisions']}")
-    print(f"\n❓ Open Questions:\n{result['open_questions']}")
+    print(f"Meeting ID: {result['meeting_id']}")
+    print(f"Title: {result['title']}")
+    print(f"\nSummary:\n{result['summary']}")
+    print(f"\nAction Items:\n{result['action_items']}")
+    print(f"\nKey Decisions:\n{result['key_decisions']}")
+    print(f"\nOpen Questions:\n{result['open_questions']}")
     print("=" * 60)
 
-    print("\n💬 Chat with your meeting (type 'exit' to quit)\n")
+    print("\nChat with your meeting (type 'exit' to quit)\n")
 
     from core.rag_engine import load_rag_chain
 
@@ -60,13 +89,10 @@ if __name__ == "__main__":
 
     while True:
         question = input("You: ").strip()
-
         if question.lower() in ["exit", "quit", "q"]:
-            print("👋 Goodbye!")
+            print("Goodbye!")
             break
-
         if not question:
             continue
-
         answer = ask_questions(rag_chain, question)
-        print(f"\n🤖 Assistant: {answer}\n")
+        print(f"\nAssistant: {answer}\n")

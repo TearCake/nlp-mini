@@ -30,6 +30,7 @@ dependencies = [
     "torch>=2.2.0",
     "torchaudio>=2.2.0",
     "uvicorn[standard]>=0.30.0",
+    "youtube-transcript-api>=1.2.4",
     "yt-dlp>=2024.4.9",
 ]
 
