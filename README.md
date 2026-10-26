@@ -235,21 +235,49 @@ All meeting and chat endpoints require a bearer token obtained from login.
 | `POST` | `/meetings/process` | Process a YouTube URL or local media path |
 | `GET` | `/meetings/` | List the current user's meetings |
 | `GET` | `/meetings/{meeting_id}` | Get meeting details and insights |
+| `POST` | `/meetings/{meeting_id}/format` | Dynamically convert meeting summary and transcript format |
 | `PATCH` | `/meetings/{meeting_id}/rename` | Rename a meeting |
 | `DELETE` | `/meetings/{meeting_id}` | Delete a meeting |
 | `POST` | `/meetings/{meeting_id}/ask` | Ask a question about a meeting |
+| `POST` | `/meetings/{meeting_id}/ask/stream` | Stream real-time answers token-by-token |
 | `GET` | `/meetings/{meeting_id}/chats` | Get saved meeting questions |
 
 ## Processing Inputs
 
 The dashboard accepts:
 
-- A public YouTube URL, downloaded with `yt-dlp`
+- A public YouTube URL, downloaded with `yt-dlp` (or transcribed via captions fast-path)
 - A local audio/video file path accessible to the backend process
 
-Supported language values currently used by the UI are `english` and
-`hinglish`. Processing can take time because transcription, embeddings, and
-LLM calls happen synchronously.
+Supported language values currently used by the UI are `english` and `hinglish`.
+Supported output formats are:
+- `translated`: Clear, professional English
+- `hindi`: Hindi font / Devanagari script (हिन्दी फ़ॉन्ट)
+- `romanized`: Roman transliteration / Conversational Hinglish in Latin script
+
+### Recommended Hinglish YouTube Videos for Testing
+
+Here are short, high-clarity code-mixed (Hindi + English) videos that are ideal for testing the Hinglish / Sarvam AI pipeline:
+
+1. **What is an API? (~3 minutes)**
+   - **Link:** `https://www.youtube.com/watch?v=cDU1Q2JJWFY`
+   - **Title:** *API Kya Hota Hai? | What is API? Application Programming Interface Explained*
+   - **Good for:** Testing technical vocabulary (endpoints, requests, client-server) and verifying script translation/transliteration.
+
+2. **Git in 2 Minutes (~2 minutes)**
+   - **Link:** `https://www.youtube.com/watch?v=M_esfkpiFSs`
+   - **Title:** *What Is Git? | Git Explained | Beginner Friendly | Git In 2 Minutes*
+   - **Good for:** Fast-paced audio chunking and extracting concrete developer action items (`git init`, `git commit`).
+
+3. **What is Cloud Computing? (~4.5 minutes)**
+   - **Link:** `https://www.youtube.com/watch?v=rQtZO9SkNCw`
+   - **Title:** *What is Cloud Computing? Explained in 5 Minutes!*
+   - **Good for:** Testing multi-topic discussion (SaaS, PaaS, IaaS) and structured executive summary generation.
+
+4. **Git Explained with Real-Life Examples (~5.5 minutes)**
+   - **Link:** `https://www.youtube.com/watch?v=gzTTj9h1CNs`
+   - **Title:** *Git Explained in 5 Minutes With Real Life Example (Hindi)*
+   - **Good for:** Conversational storytelling mixed with developer terminology and key decision extraction.
 
 ## Troubleshooting
 
