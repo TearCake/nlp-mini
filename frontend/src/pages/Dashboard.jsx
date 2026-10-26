@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { jsPDF } from "jspdf";
@@ -7,6 +7,14 @@ import Sidebar from "../components/Sidebar";
 import { useAuth } from "../context/AuthContext";
 import API from "../api/api";
 import lensLogo from "../assets/lenslogo.png";
+
+function formatFileSize(bytes) {
+  if (!bytes) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
 
 function parseTranscriptSegments(rawText) {
   if (!rawText) return [];
@@ -53,7 +61,13 @@ function Dashboard() {
     return localStorage.getItem("lensai_dark_mode") === "true";
   });
 
+  const [inputMode, setInputMode] = useState("link"); // "link" | "upload"
   const [source, setSource] = useState("");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const fileInputRef = useRef(null);
+
   const [language, setLanguage] = useState("english");
   const [outputFormat, setOutputFormat] = useState("translated");
   const [chatOutputFormat, setChatOutputFormat] = useState("translated");
@@ -108,9 +122,60 @@ function Dashboard() {
     setSelectedMeeting(null);
     setChats([]);
     setSource("");
+    setSelectedFile(null);
+    setUploadProgress(0);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
     setQuestion("");
     setActiveView("home");
     setError("");
+  };
+
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      setSelectedFile(file);
+      setInputMode("upload");
+      setError("");
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFile(e.target.files[0]);
+      setError("");
+    }
+  };
+
+  const handleRemoveFile = (e) => {
+    e.stopPropagation();
+    setSelectedFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const loadMeeting = async (meetingId, view = "summary") => {
@@ -180,25 +245,54 @@ function Dashboard() {
   };
 
   const handleProcessMeeting = async () => {
-    if (!source.trim()) return;
+    if (inputMode === "link" && !source.trim()) return;
+    if (inputMode === "upload" && !selectedFile) return;
 
     try {
       setProcessing(true);
+      setUploadProgress(0);
       setError("");
 
-      const res = await API.post("/meetings/process", {
-        source,
-        language,
-        output_format: outputFormat,
-      });
+      let res;
+      if (inputMode === "upload") {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+        formData.append("language", language);
+        formData.append("output_format", outputFormat);
+
+        res = await API.post("/meetings/upload", formData, {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+          onUploadProgress: (progressEvent) => {
+            if (progressEvent.total) {
+              const percent = Math.round(
+                (progressEvent.loaded * 100) / progressEvent.total
+              );
+              setUploadProgress(percent);
+            }
+          },
+        });
+      } else {
+        res = await API.post("/meetings/process", {
+          source,
+          language,
+          output_format: outputFormat,
+        });
+      }
 
       await fetchMeetings();
       await loadMeeting(res.data.meeting_id, "summary");
       setSource("");
+      setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     } catch (err) {
       setError(err.response?.data?.detail || "Failed to process meeting");
     } finally {
       setProcessing(false);
+      setUploadProgress(0);
     }
   };
 
@@ -546,25 +640,163 @@ function Dashboard() {
                     Paste a YouTube URL or a meeting recording path.
                   </p>
 
-                  <textarea
-                    value={source}
-                    onChange={(e) => setSource(e.target.value)}
-                    rows={5}
-                    placeholder="https://youtube.com/watch?v=... or /path/to/recording.mp3"
-                    className={`mt-5 w-full resize-none rounded-xl border px-4 py-3 text-sm outline-none transition ${
-                      darkMode
-                        ? "border-[#2A2E3A] bg-[#0A0A12] text-white placeholder:text-slate-500 focus:border-[#7C4DFF]"
-                        : "border-[#E7E2F5] bg-[#F6F3FB] text-slate-900 placeholder:text-slate-400 focus:border-[#7C4DFF]"
-                    }`}
-                  />
+                  {/* Input Mode Switcher: YouTube Link vs Upload Video */}
+                  <div className="mt-5 flex items-center gap-1.5 p-1 rounded-xl border border-inherit bg-slate-500/5">
+                    <button
+                      type="button"
+                      onClick={() => setInputMode("link")}
+                      className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition ${
+                        inputMode === "link"
+                          ? "bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-white shadow-sm"
+                          : darkMode
+                          ? "text-slate-400 hover:text-white"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <span>🔗</span> YouTube URL
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInputMode("upload")}
+                      className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition ${
+                        inputMode === "upload"
+                          ? "bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-white shadow-sm"
+                          : darkMode
+                          ? "text-slate-400 hover:text-white"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      <span>📁</span> Upload / Drag & Drop
+                    </button>
+                  </div>
 
-                  <p className="mt-2 text-xs text-slate-500">
-                    {source
-                      ? isYoutube
-                        ? "⚡ YouTube detected (uses instant caption fast-path if available)"
-                        : "Meeting audio/video file detected"
-                      : "Supports YouTube links and local recording files"}
-                  </p>
+                  {/* Mode 1: YouTube URL */}
+                  {inputMode === "link" ? (
+                    <div className="mt-4">
+                      <textarea
+                        value={source}
+                        onChange={(e) => setSource(e.target.value)}
+                        rows={4}
+                        placeholder="https://youtube.com/watch?v=... or https://youtu.be/..."
+                        className={`w-full resize-none rounded-xl border px-4 py-3 text-sm outline-none transition ${
+                          darkMode
+                            ? "border-[#2A2E3A] bg-[#0A0A12] text-white placeholder:text-slate-500 focus:border-[#7C4DFF]"
+                            : "border-[#E7E2F5] bg-[#F6F3FB] text-slate-900 placeholder:text-slate-400 focus:border-[#7C4DFF]"
+                        }`}
+                      />
+
+                      <p className="mt-1.5 text-xs text-slate-500">
+                        {source
+                          ? isYoutube
+                            ? "⚡ YouTube detected (uses instant caption fast-path if available)"
+                            : "Custom web video URL"
+                          : "Paste any YouTube link to fetch captions or transcribe audio"}
+                      </p>
+                    </div>
+                  ) : (
+                    /* Mode 2: Drag & Drop Video/Audio File Upload */
+                    <div className="mt-4">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileSelect}
+                        accept="video/*,audio/*,.mp4,.mkv,.webm,.mov,.avi,.mp3,.wav,.m4a,.aac,.flac"
+                        className="hidden"
+                      />
+
+                      {!selectedFile ? (
+                        <div
+                          onDragEnter={handleDragEnter}
+                          onDragOver={handleDragOver}
+                          onDragLeave={handleDragLeave}
+                          onDrop={handleDrop}
+                          onClick={() => fileInputRef.current?.click()}
+                          className={`group relative flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-7 text-center cursor-pointer transition ${
+                            isDragging
+                              ? "border-[#7C4DFF] bg-[#7C4DFF]/15 scale-[1.01]"
+                              : darkMode
+                              ? "border-[#2A2E3A] bg-[#0A0A12]/80 hover:border-[#7C4DFF] hover:bg-[#7C4DFF]/5"
+                              : "border-[#D8D2EB] bg-[#F6F3FB]/70 hover:border-[#7C4DFF] hover:bg-[#7C4DFF]/5"
+                          }`}
+                        >
+                          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#7C4DFF]/20 to-[#FF7A59]/20 text-2xl transition group-hover:scale-110">
+                            {isDragging ? "📥" : "🎬"}
+                          </div>
+
+                          <p className="mt-3 text-sm font-semibold">
+                            {isDragging ? (
+                              <span className="text-[#7C4DFF]">Drop your video or audio file here!</span>
+                            ) : (
+                              <>
+                                Drag and drop downloaded video/audio here, or{" "}
+                                <span className="text-[#7C4DFF] underline decoration-2 underline-offset-2">
+                                  browse
+                                </span>
+                              </>
+                            )}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Supports downloaded MP4, MKV, WebM, MOV, MP3, WAV, M4A, AAC
+                          </p>
+
+                          <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+                            {["MP4", "MKV", "WebM", "MP3", "WAV", "M4A"].map((fmt) => (
+                              <span
+                                key={fmt}
+                                className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                                  darkMode ? "bg-white/5 text-slate-400" : "bg-black/5 text-slate-600"
+                                }`}
+                              >
+                                {fmt}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className={`flex items-center justify-between rounded-2xl border p-4 shadow-sm ${
+                            darkMode ? "border-[#2A2E3A] bg-[#0A0A12]" : "border-[#E7E2F5] bg-white"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 overflow-hidden">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#7C4DFF] to-[#FF7A59] text-xl text-white shadow-sm">
+                              {selectedFile.type?.startsWith("audio") ? "🎵" : "🎥"}
+                            </div>
+                            <div className="overflow-hidden">
+                              <p className="truncate text-sm font-semibold leading-tight">
+                                {selectedFile.name}
+                              </p>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                {formatFileSize(selectedFile.size)} • {selectedFile.type || "Media file"}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => fileInputRef.current?.click()}
+                              className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
+                                darkMode
+                                  ? "border-[#2A2E3A] hover:border-slate-500 text-slate-300"
+                                  : "border-[#E7E2F5] hover:border-slate-400 text-slate-700"
+                              }`}
+                            >
+                              Change
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleRemoveFile}
+                              className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-500/20 bg-red-500/10 text-xs font-bold text-red-400 hover:bg-red-500/20 transition"
+                              title="Remove file"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
@@ -630,10 +862,20 @@ function Dashboard() {
 
                   <button
                     onClick={handleProcessMeeting}
-                    disabled={!source.trim() || processing}
+                    disabled={
+                      processing ||
+                      (inputMode === "link" && !source.trim()) ||
+                      (inputMode === "upload" && !selectedFile)
+                    }
                     className="mt-6 w-full rounded-xl bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] py-3.5 text-sm font-semibold text-white shadow-[0_0_25px_rgba(124,77,255,0.3)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {processing ? "Processing meeting..." : "Process meeting"}
+                    {processing
+                      ? inputMode === "upload" && uploadProgress < 100
+                        ? `Uploading (${uploadProgress}%)...`
+                        : "Processing meeting..."
+                      : inputMode === "upload"
+                      ? "Upload and process video"
+                      : "Process meeting"}
                   </button>
 
                   {processing && (
@@ -644,12 +886,32 @@ function Dashboard() {
                           : "border-[#E7E2F5] bg-[#F6F3FB] text-slate-600"
                       }`}
                     >
-                      <h3 className="mb-1 text-sm font-semibold">
-                        Analyzing and processing...
+                      <h3 className="mb-1 text-sm font-semibold flex items-center justify-between">
+                        <span>
+                          {inputMode === "upload" && uploadProgress < 100
+                            ? "Uploading media file..."
+                            : "Analyzing and processing..."}
+                        </span>
+                        {inputMode === "upload" && (
+                          <span className="text-xs font-bold text-[#7C4DFF]">
+                            {uploadProgress}%
+                          </span>
+                        )}
                       </h3>
+
+                      {inputMode === "upload" && uploadProgress < 100 && (
+                        <div className="my-2 h-2 w-full overflow-hidden rounded-full bg-slate-700/20">
+                          <div
+                            className="h-full bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] transition-all duration-200"
+                            style={{ width: `${uploadProgress}%` }}
+                          />
+                        </div>
+                      )}
+
                       <p className="text-xs leading-5">
-                        Fetching transcript, identifying speakers, generating summary,
-                        and building vector knowledge base. This may take a moment.
+                        {inputMode === "upload" && uploadProgress < 100
+                          ? `Uploading ${selectedFile?.name || "file"} to server...`
+                          : "Transcribing audio with Whisper, identifying speakers, generating summary, and building vector knowledge base. This may take a moment."}
                       </p>
                     </div>
                   )}

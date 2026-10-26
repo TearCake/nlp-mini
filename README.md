@@ -15,7 +15,8 @@ The project is split into:
 ## Features
 
 - User registration and JWT-based login
-- Submit a YouTube URL or local media path for processing (with instant YouTube caption fast-path)
+- Submit a YouTube URL or upload downloaded local media files
+- **Drag-and-Drop File Upload:** Drag and drop or browse video/audio files (MP4, MKV, WebM, MOV, MP3, WAV, M4A, etc.) with real-time upload progress tracking
 - Speech-to-text transcription with Whisper and Sarvam AI with speaker diarization and timestamps
 - **3 Multilingual Output Formats:** Choose between **Translated (English)**, **Hindi Font (हिन्दी फ़ॉन्ट / Devanagari)**, and **Roman Transliteration (Hinglish in Latin script)** for transcripts and meeting summaries.
 - On-the-fly meeting format conversion with live vector store synchronization
@@ -233,6 +234,7 @@ All meeting and chat endpoints require a bearer token obtained from login.
 | `POST` | `/auth/login` | Get a JWT access token |
 | `GET` | `/auth/me` | Get the current user |
 | `POST` | `/meetings/process` | Process a YouTube URL or local media path |
+| `POST` | `/meetings/upload` | Upload downloaded video/audio file (multipart/form-data) |
 | `GET` | `/meetings/` | List the current user's meetings |
 | `GET` | `/meetings/{meeting_id}` | Get meeting details and insights |
 | `POST` | `/meetings/{meeting_id}/format` | Dynamically convert meeting summary and transcript format |

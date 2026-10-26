@@ -1,7 +1,9 @@
 import json
 import os
 import shutil
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+import re
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,8 @@ from models.models import User, Meeting
 from auth.auth import get_current_user
 from main import run_pipeline
 
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 router = APIRouter(prefix="/meetings", tags=["Meetings"])
 
@@ -72,6 +76,94 @@ def process_meeting(
     new_meeting.open_questions = json.dumps(result["open_questions"])
     new_meeting.vector_path = f"vector_db/{meeting_id}"
     new_meeting.output_format = result.get("output_format", req.output_format)
+
+    db.commit()
+    db.refresh(new_meeting)
+
+    return {
+        "meeting_id": new_meeting.id,
+        "title": new_meeting.title,
+        "transcript": new_meeting.transcript,
+        "summary": new_meeting.summary,
+        "action_items": json.loads(new_meeting.action_items),
+        "key_decisions": json.loads(new_meeting.key_decisions),
+        "open_questions": json.loads(new_meeting.open_questions),
+        "output_format": new_meeting.output_format,
+    }
+
+
+@router.post("/upload")
+def upload_and_process_meeting(
+    file: UploadFile = File(...),
+    language: str = Form("english"),
+    output_format: str = Form("translated"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No file selected."
+        )
+
+    # Sanitize and assign unique filename in uploads/
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", file.filename)
+    unique_prefix = uuid.uuid4().hex[:8]
+    saved_filename = f"{unique_prefix}_{clean_name}"
+    file_path = os.path.join(UPLOAD_DIR, saved_filename)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save uploaded file: {str(e)}"
+        )
+
+    # Step 1: create initial meeting record with clean display name
+    new_meeting = Meeting(
+        user_id=current_user.id,
+        source=file.filename,
+        output_format=output_format
+    )
+
+    db.add(new_meeting)
+    db.commit()
+    db.refresh(new_meeting)
+
+    meeting_id = str(new_meeting.id)
+
+    # Step 2: run AI pipeline safely on the uploaded file
+    try:
+        result = run_pipeline(
+            source=file_path,
+            language=language,
+            output_format=output_format,
+            meeting_id=meeting_id
+        )
+    except Exception as e:
+        db.delete(new_meeting)
+        db.commit()
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process uploaded file: {str(e)}"
+        )
+
+    # Step 3: save result in DB
+    new_meeting.title = result["title"]
+    new_meeting.transcript = result["transcript"]
+    new_meeting.summary = result["summary"]
+    new_meeting.action_items = json.dumps(result["action_items"])
+    new_meeting.key_decisions = json.dumps(result["key_decisions"])
+    new_meeting.open_questions = json.dumps(result["open_questions"])
+    new_meeting.vector_path = f"vector_db/{meeting_id}"
+    new_meeting.output_format = result.get("output_format", output_format)
 
     db.commit()
     db.refresh(new_meeting)
