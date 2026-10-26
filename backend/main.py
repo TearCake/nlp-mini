@@ -7,8 +7,9 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+import re
 from utils.audio_processor import process_input, fetch_youtube_transcript_fast, cleanup_files
-from core.transcriber import transcribe_all, diarize_transcript
+from core.transcriber import transcribe_all, diarize_transcript, transliterate_transcript_to_roman
 from core.extractor import extract_meeting_insights, convert_transcript_format
 from core.rag_engine import build_rag_chain, ask_questions
 
@@ -54,15 +55,28 @@ def run_pipeline(source: str, language: str = "english", output_format: str = "t
         print("[WARN] No speech or dialogue detected during transcription. Using fallback placeholder.")
         transcript = "[00:00] Note: No speech or dialogue was detected in this recording."
 
-    # Step 3: Format transcript dialogue according to user's selected output_format
-    if fmt in ["hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration", "hinglish"]:
-        if "No speech or dialogue was detected" not in transcript:
-            print(f"Converting transcript dialogue to format [{fmt}]...")
-            converted_transcript = convert_transcript_format(transcript, fmt)
-            if converted_transcript and converted_transcript.strip():
-                transcript = converted_transcript
-            else:
-                print(f"[WARN] Transcript format conversion to [{fmt}] returned empty text; retaining original dialogue.")
+    # Step 3: Enforce Roman transliteration for Hinglish audio transcript
+    is_hinglish_audio = (
+        effective_language in ["hinglish", "hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration"]
+        or bool(re.search(r"[\u0900-\u097F]", transcript or ""))
+    )
+
+    if is_hinglish_audio:
+        # Mandatory Requirement: The transcript MUST ALWAYS be in Roman transliteration if it's Hinglish audio.
+        # It must NEVER be converted to Devanagari Hindi font, and NEVER translated into pure English.
+        if re.search(r"[\u0900-\u097F]", transcript):
+            print("Ensuring transcript dialogue is strictly in Roman transliteration for Hinglish audio...")
+            transcript = transliterate_transcript_to_roman(transcript)
+    else:
+        # For non-Hinglish audio (e.g. English), format transcript dialogue if non-default format requested
+        if fmt in ["hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration"]:
+            if "No speech or dialogue was detected" not in transcript:
+                print(f"Converting transcript dialogue to format [{fmt}]...")
+                converted_transcript = convert_transcript_format(transcript, fmt)
+                if converted_transcript and converted_transcript.strip():
+                    transcript = converted_transcript
+                else:
+                    print(f"[WARN] Transcript format conversion to [{fmt}] returned empty text; retaining original dialogue.")
 
     print(f"Transcript ready ({len(transcript)} chars). Generating meeting insights in [{fmt}]...")
 
@@ -88,6 +102,7 @@ def run_pipeline(source: str, language: str = "english", output_format: str = "t
         "key_decisions": key_decisions,
         "open_questions": open_questions,
         "output_format": fmt,
+        "effective_language": effective_language,
     }
 
 

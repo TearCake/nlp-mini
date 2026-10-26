@@ -833,14 +833,14 @@ function Dashboard() {
                         Selected Output Type
                       </label>
                       <div className="text-xs text-slate-400 mt-1">
-                        Select transcript, summary & answer script below
+                        Select AI summary & answer script below (Hinglish audio transcript is always in Roman transliteration)
                       </div>
                     </div>
                   </div>
 
                   <div className="mt-4">
                     <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 block mb-2">
-                      Output Format (Summary, Transcript & Answers)
+                      Output Format (Summary, Insights & Answers)
                     </label>
                     <div className="grid grid-cols-3 gap-2.5">
                       {[
@@ -1026,7 +1026,7 @@ function Dashboard() {
                                 ? "border-[#2A2E3A] bg-[#0A0A12] text-slate-300 hover:border-[#7C4DFF]"
                                 : "border-[#E7E2F5] bg-[#F6F3FB] text-slate-700 hover:border-[#7C4DFF]"
                             } disabled:opacity-50`}
-                            title={`Switch notes & transcript to ${fmt.label}`}
+                            title={`Switch summary & AI answers to ${fmt.label}`}
                           >
                             <span>{fmt.icon}</span>
                             <span>{fmt.label}</span>
@@ -1123,9 +1123,19 @@ function Dashboard() {
                   <div className="space-y-4">
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-inherit">
                       <div>
-                        <h2 className="text-base font-bold">Transcript & Dialogue</h2>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-base font-bold">Transcript & Dialogue</h2>
+                          {(selectedMeeting?.language === "hinglish" || selectedMeeting?.output_format === "romanized") && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                              🔤 Roman Transliteration
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-slate-500">
                           {parsedTranscript.length} timestamped speech segments
+                          {(selectedMeeting?.language === "hinglish" || selectedMeeting?.output_format === "romanized") && (
+                            <span> • Hinglish audio preserved in verbatim Roman script</span>
+                          )}
                         </p>
                       </div>
 

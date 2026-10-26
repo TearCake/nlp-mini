@@ -125,6 +125,7 @@ def upload_and_process_meeting(
     new_meeting = Meeting(
         user_id=current_user.id,
         source=file.filename,
+        language=language or "english",
         output_format=output_format
     )
 
@@ -163,6 +164,7 @@ def upload_and_process_meeting(
     new_meeting.key_decisions = json.dumps(result["key_decisions"])
     new_meeting.open_questions = json.dumps(result["open_questions"])
     new_meeting.vector_path = f"vector_db/{meeting_id}"
+    new_meeting.language = result.get("effective_language", language or "english")
     new_meeting.output_format = result.get("output_format", output_format)
 
     db.commit()
@@ -171,6 +173,7 @@ def upload_and_process_meeting(
     return {
         "meeting_id": new_meeting.id,
         "title": new_meeting.title,
+        "language": new_meeting.language,
         "transcript": new_meeting.transcript,
         "summary": new_meeting.summary,
         "action_items": json.loads(new_meeting.action_items),
@@ -197,6 +200,7 @@ def get_meetings(
             "id": meeting.id,
             "title": meeting.title,
             "source": meeting.source,
+            "language": meeting.language or "english",
             "output_format": meeting.output_format or "translated",
             "created_at": meeting.created_at,
             "chat_count": len(meeting.chats)
@@ -230,6 +234,7 @@ def get_single_meeting(
         "id": meeting.id,
         "title": meeting.title,
         "source": meeting.source,
+        "language": meeting.language or "english",
         "transcript": meeting.transcript,
         "summary": meeting.summary,
         "action_items": json.loads(meeting.action_items or "[]"),
@@ -282,9 +287,25 @@ def change_meeting_format(
     try:
         from core.extractor import convert_meeting_insights, convert_transcript_format
         from core.vector_store import build_vector_store
+        from core.transcriber import transliterate_transcript_to_roman
 
-        # 1. Convert transcript dialogue while preserving timestamps and speakers
-        converted_transcript = convert_transcript_format(meeting.transcript or "", target_fmt)
+        # Determine if this meeting's audio is Hinglish
+        is_hinglish_audio = (
+            (meeting.language and meeting.language.lower() in ["hinglish", "hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration"])
+            or (meeting.output_format and meeting.output_format.lower() in ["romanized", "hinglish"])
+            or bool(re.search(r"[\u0900-\u097F]", meeting.transcript or ""))
+        )
+
+        if is_hinglish_audio:
+            # Mandatory Requirement: The transcript MUST ALWAYS be in Roman transliteration for Hinglish audio.
+            # Never translate it to English and never convert it to Devanagari Hindi font.
+            if re.search(r"[\u0900-\u097F]", meeting.transcript or ""):
+                print("Ensuring transcript is strictly in Roman transliteration...")
+                meeting.transcript = transliterate_transcript_to_roman(meeting.transcript)
+            converted_transcript = meeting.transcript
+        else:
+            # English audio: convert transcript dialogue if requested
+            converted_transcript = convert_transcript_format(meeting.transcript or "", target_fmt)
 
         # 2. Convert meeting insights
         current_insights = {
@@ -315,6 +336,7 @@ def change_meeting_format(
             "id": meeting.id,
             "title": meeting.title,
             "source": meeting.source,
+            "language": meeting.language or "english",
             "transcript": meeting.transcript,
             "summary": meeting.summary,
             "action_items": json.loads(meeting.action_items or "[]"),

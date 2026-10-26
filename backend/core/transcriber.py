@@ -70,18 +70,55 @@ def transcribe_chunk_whisper(chunk_path: str, time_offset_sec: float = 0.0) -> s
 
 
 def _send_to_sarvam(piece_path: str) -> str:
-    """Send one <=30s WAV file to Sarvam and return English translated transcript."""
+    """Send one <=30s WAV file to Sarvam and return verbatim transcript in Roman transliteration."""
     api_key = os.getenv("SARVAM_API_KEY") or SARVAM_API_KEY
     if not api_key:
         raise RuntimeError("SARVAM_API_KEY is not set in environment / .env")
 
     headers = {"api-subscription-key": api_key}
 
+    # 1. Primary: saaras:v4 with mode="translit" for native, verbatim Roman transliteration
+    try:
+        with open(piece_path, "rb") as f:
+            files = {"file": (os.path.basename(piece_path), f, "audio/wav")}
+            data = {"model": "saaras:v4", "mode": "translit"}
+            response = requests.post(
+                "https://api.sarvam.ai/speech-to-text",
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=120,
+            )
+            if response.ok:
+                txt = response.json().get("transcript", "").strip()
+                if txt:
+                    return txt
+    except Exception as e:
+        print(f"[WARN] Sarvam saaras:v4 translit attempt error: {e}")
+
+    # 2. Secondary: saarika:v2.5 speech-to-text to capture verbatim spoken Hindi/Hinglish
+    try:
+        with open(piece_path, "rb") as f:
+            files = {"file": (os.path.basename(piece_path), f, "audio/wav")}
+            data = {"model": "saarika:v2.5", "language_code": "hi-IN"}
+            response = requests.post(
+                "https://api.sarvam.ai/speech-to-text",
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=120,
+            )
+            if response.ok:
+                txt = response.json().get("transcript", "").strip()
+                if txt:
+                    return txt
+    except Exception as e:
+        print(f"[WARN] Sarvam saarika:v2.5 attempt error: {e}")
+
+    # 3. Fallback: saaras:v2.5 speech-to-text-translate
     with open(piece_path, "rb") as f:
         files = {"file": (os.path.basename(piece_path), f, "audio/wav")}
-        data = {
-            "model": os.getenv("SARVAM_STT_MODEL", "saaras:v2.5"),
-        }
+        data = {"model": "saaras:v2.5"}
         response = requests.post(
             SARVAM_STT_TRANSLATE_URL,
             headers=headers,
@@ -291,4 +328,75 @@ def transcribe_all(chunks: list, language: str = "english") -> str:
     diarized_transcript = diarize_transcript(raw_transcript)
     print("Transcription and diarization complete.")
 
+    # ALWAYS ensure transcript is in Roman transliteration for Hinglish audio
+    is_indic = language.lower() in ["hinglish", "hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration"]
+    if is_indic or re.search(r"[\u0900-\u097F]", diarized_transcript):
+        print("Ensuring transcript is in Roman transliteration for Hinglish audio...")
+        diarized_transcript = transliterate_transcript_to_roman(diarized_transcript)
+
     return diarized_transcript
+
+
+def transliterate_transcript_to_roman(transcript: str) -> str:
+    """
+    Converts any Devanagari Hindi lines in the transcript strictly into
+    verbatim Roman script Hinglish (Latin alphabet), keeping timestamps and speaker tags.
+    """
+    if not transcript or not transcript.strip():
+        return transcript
+
+    lines = transcript.splitlines()
+    if not lines:
+        return transcript
+
+    has_devanagari = any(re.search(r"[\u0900-\u097F]", l) for l in lines)
+    if not has_devanagari:
+        return transcript
+
+    from core.rag_engine import get_llm
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """You are an expert Hindi/Hinglish transliterator.
+Transliterate each line of Devanagari Hindi text strictly into natural Roman script Hinglish (Latin alphabet).
+RULES:
+1. Do NOT translate into English. Preserve the exact spoken Hindi words in Latin characters (e.g. 'bhaiya apne ko', 'yaar humko bhi mila tha', 'kamaal ka', 'bawaal hai', 'marks milenge').
+2. Retain all English/technical words in English spelling (Git, video, minutes, developers, project, etc.).
+3. Maintain line format exactly: `[MM:SS] Speaker X: <roman_transliterated_dialogue>`
+4. Output ONLY the transliterated lines without introductory or concluding text."""
+        ),
+        ("human", "{chunk}")
+    ])
+
+    batch_size = 6
+    converted_lines = []
+
+    try:
+        chain = prompt | get_llm(model="openai/gpt-oss-120b", max_tokens=3000) | StrOutputParser()
+        for i in range(0, len(lines), batch_size):
+            batch = lines[i:i + batch_size]
+            batch_text = "\n".join(batch)
+            if not re.search(r"[\u0900-\u097F]", batch_text):
+                converted_lines.extend(batch)
+                continue
+            res = ""
+            try:
+                res = chain.invoke({"chunk": batch_text}).strip()
+            except Exception as batch_err:
+                print(f"[WARN] Batch transliteration with 120b failed ({batch_err}), attempting 20b fallback...")
+                try:
+                    fallback_chain = prompt | get_llm(model="openai/gpt-oss-20b", max_tokens=2500) | StrOutputParser()
+                    res = fallback_chain.invoke({"chunk": batch_text}).strip()
+                except Exception as fb_err:
+                    print(f"[WARN] Fallback transliteration also failed: {fb_err}")
+            if res:
+                converted_lines.append(res)
+            else:
+                converted_lines.append(batch_text)
+        return "\n".join(converted_lines).strip()
+    except Exception as e:
+        print(f"[WARN] Transliteration fallback ({e}), returning original lines.")
+        return transcript
