@@ -800,9 +800,20 @@ function Dashboard() {
 
                   <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 block mb-1.5">
-                        Spoken Audio Language
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Spoken Audio Language
+                        </label>
+                        {language === "hinglish" ? (
+                          <span className="text-[10px] font-bold text-[#FF7A59] bg-[#FF7A59]/10 px-2 py-0.5 rounded-full">
+                            ⚡ Sarvam AI STT
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-[#7C4DFF] bg-[#7C4DFF]/10 px-2 py-0.5 rounded-full">
+                            🎙️ Whisper STT
+                          </span>
+                        )}
+                      </div>
                       <select
                         value={language}
                         onChange={(e) => setLanguage(e.target.value)}
@@ -812,8 +823,8 @@ function Dashboard() {
                             : "border-[#E7E2F5] bg-white text-slate-700"
                         }`}
                       >
-                        <option value="english">English</option>
-                        <option value="hinglish">Hinglish / Hindi-English</option>
+                        <option value="english">English (Whisper AI)</option>
+                        <option value="hinglish">Hinglish / Hindi-English (Sarvam AI)</option>
                       </select>
                     </div>
 
@@ -842,7 +853,12 @@ function Dashboard() {
                           <button
                             key={opt.id}
                             type="button"
-                            onClick={() => setOutputFormat(opt.id)}
+                            onClick={() => {
+                              setOutputFormat(opt.id);
+                              if (opt.id === "hindi" || opt.id === "romanized") {
+                                setLanguage("hinglish");
+                              }
+                            }}
                             className={`flex flex-col items-center justify-center rounded-xl border p-2.5 text-center transition ${
                               isSelected
                                 ? "border-[#7C4DFF] bg-[#7C4DFF]/15 text-[#7C4DFF] font-semibold shadow-sm ring-1 ring-[#7C4DFF]"

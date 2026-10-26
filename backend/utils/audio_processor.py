@@ -1,3 +1,10 @@
+import sys
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import os
 import re
 import yt_dlp
@@ -130,7 +137,7 @@ def convert_to_wav(input_path: str) -> str:
         audio = audio.set_channels(1).set_frame_rate(16000)  # 16khz
         audio.export(output_path, format="wav")
     except Exception as e:
-        print(f"⚠️ Audio extraction warning ({e}). Generating fallback audio...")
+        print(f"[WARN] Audio extraction warning ({e}). Generating fallback audio...")
         audio = AudioSegment.silent(duration=2000, frame_rate=16000).set_channels(1)
         audio.export(output_path, format="wav")
     return output_path
@@ -175,7 +182,7 @@ def process_input(source: str) -> tuple:
     print("Chunking audio...")
     chunks = chunk_audio(wav_path)
     to_cleanup.extend(chunks)
-    print(f"Audio ready — {len(chunks)} chunk(s) created.")
+    print(f"Audio ready -- {len(chunks)} chunk(s) created.")
     return chunks, to_cleanup
 
 

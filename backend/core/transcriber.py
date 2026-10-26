@@ -1,3 +1,10 @@
+import sys
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import os
 import re
 import requests
@@ -40,22 +47,26 @@ def format_timestamp(seconds: float) -> str:
 
 def transcribe_chunk_whisper(chunk_path: str, time_offset_sec: float = 0.0) -> str:
     """Transcribe chunk using Whisper and preserve segment timestamps."""
-    model = load_model()
-    result = model.transcribe(chunk_path, task="transcribe")
+    try:
+        model = load_model()
+        result = model.transcribe(chunk_path, task="transcribe")
 
-    segments = result.get("segments", [])
-    if segments:
-        lines = []
-        for seg in segments:
-            text = seg.get("text", "").strip()
-            if text:
-                start_sec = seg.get("start", 0.0) + time_offset_sec
-                ts = format_timestamp(start_sec)
-                lines.append(f"[{ts}] {text}")
-        if lines:
-            return "\n".join(lines)
+        segments = result.get("segments", [])
+        if segments:
+            lines = []
+            for seg in segments:
+                text = seg.get("text", "").strip()
+                if text:
+                    start_sec = seg.get("start", 0.0) + time_offset_sec
+                    ts = format_timestamp(start_sec)
+                    lines.append(f"[{ts}] {text}")
+            if lines:
+                return "\n".join(lines)
 
-    return result.get("text", "").strip()
+        return result.get("text", "").strip()
+    except Exception as e:
+        print(f"[WARN] Whisper transcription error: {e}")
+        return ""
 
 
 def _send_to_sarvam(piece_path: str) -> str:
@@ -80,7 +91,7 @@ def _send_to_sarvam(piece_path: str) -> str:
         )
 
     if not response.ok:
-        print(f"\n❌ Sarvam returned {response.status_code}: {response.text}\n")
+        print(f"\n[ERROR] Sarvam returned {response.status_code}: {response.text}\n")
         response.raise_for_status()
 
     res_json = response.json()
@@ -107,7 +118,7 @@ def transcribe_chunk_sarvam(chunk_path: str, time_offset_sec: float = 0.0) -> st
         ts = format_timestamp(current_sec)
 
         try:
-            print(f"  → Sarvam piece {i + 1}/{total_pieces} ...")
+            print(f"  -> Sarvam piece {i + 1}/{total_pieces} ...")
             piece_text = _send_to_sarvam(piece_path)
             if piece_text:
                 lines.append(f"[{ts}] {piece_text}")
@@ -119,14 +130,37 @@ def transcribe_chunk_sarvam(chunk_path: str, time_offset_sec: float = 0.0) -> st
 
 
 def transcribe_chunk(chunk_path: str, language: str = "english", time_offset_sec: float = 0.0) -> str:
-    """Route one chunk to Whisper or Sarvam depending on language choice."""
-    if language.lower() == "hinglish":
+    """
+    Route one chunk to Whisper or Sarvam depending on language choice,
+    with smart bi-directional fallback if one engine returns empty text.
+    """
+    is_indic = language.lower() in ["hinglish", "hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration"]
+
+    if is_indic:
         try:
-            return transcribe_chunk_sarvam(chunk_path, time_offset_sec=time_offset_sec)
+            sarvam_text = transcribe_chunk_sarvam(chunk_path, time_offset_sec=time_offset_sec)
+            if sarvam_text and sarvam_text.strip():
+                return sarvam_text
         except Exception as e:
-            print(f"⚠️ Sarvam transcription failed ({e}), falling back to Whisper...")
-            return transcribe_chunk_whisper(chunk_path, time_offset_sec=time_offset_sec)
-    return transcribe_chunk_whisper(chunk_path, time_offset_sec=time_offset_sec)
+            print(f"[WARN] Sarvam transcription failed ({e}), falling back to Whisper...")
+        return transcribe_chunk_whisper(chunk_path, time_offset_sec=time_offset_sec)
+
+    # English mode: Whisper first
+    whisper_text = transcribe_chunk_whisper(chunk_path, time_offset_sec=time_offset_sec)
+    if whisper_text and whisper_text.strip():
+        return whisper_text
+
+    # Automatic fallback: if Whisper returned empty on this chunk, try Sarvam
+    try:
+        print("[WARN] Whisper returned no dialogue on this chunk. Attempting Sarvam AI fallback...")
+        sarvam_text = transcribe_chunk_sarvam(chunk_path, time_offset_sec=time_offset_sec)
+        if sarvam_text and sarvam_text.strip():
+            print("[OK] Sarvam AI successfully extracted spoken dialogue!")
+            return sarvam_text
+    except Exception as e:
+        print(f"Sarvam fallback also failed: {e}")
+
+    return ""
 
 
 def _parse_time_to_seconds(ts_str: str) -> float:

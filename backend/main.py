@@ -16,40 +16,53 @@ load_dotenv()
 
 
 def run_pipeline(source: str, language: str = "english", output_format: str = "translated", meeting_id: str = None) -> dict:
-    print(f"Starting AI Video Assistant pipeline for meeting [{meeting_id}] with output format [{output_format}]...")
+    fmt = (output_format or "translated").lower().strip()
+    effective_language = (language or "english").lower().strip()
+
+    # If user selected Hindi or Romanized Hinglish, prioritize Hinglish engine (Sarvam AI)
+    if fmt in ["hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration", "hinglish"]:
+        if effective_language == "english":
+            print(f"Auto-routing audio pipeline to Hinglish (Sarvam AI) based on selected output format [{fmt}].")
+            effective_language = "hinglish"
+
+    print(f"Starting AI Video Assistant pipeline for meeting [{meeting_id}] with audio engine [{effective_language}] and output format [{fmt}]...")
 
     transcript = None
 
     # Step 1: Fast-path for YouTube URLs (if existing captions/subtitles are available)
-    if (source.startswith("http://") or source.startswith("https://")) and language.lower() == "english":
+    if (source.startswith("http://") or source.startswith("https://")) and effective_language == "english":
         print("Checking YouTube captions fast-path...")
         try:
             fast_transcript = fetch_youtube_transcript_fast(source)
             if fast_transcript:
-                print("⚡ Subtitles fetched instantly via YouTube Captions Fast-Path!")
+                print("[FAST] Subtitles fetched instantly via YouTube Captions Fast-Path!")
                 transcript = diarize_transcript(fast_transcript)
         except Exception as e:
-            print(f"Fast-path check failed ({e}), proceeding with Whisper audio pipeline...")
+            print(f"Fast-path check failed ({e}), proceeding with audio transcription pipeline...")
 
     # Step 2: Fallback to audio download/extraction + Whisper/Sarvam transcription
     if not transcript:
         chunks, to_cleanup = process_input(source)
         try:
-            transcript = transcribe_all(chunks, language)
+            transcript = transcribe_all(chunks, effective_language)
         finally:
             cleanup_files(to_cleanup)
 
     # Ensure transcript is never empty so downstream format conversion,
     # insight extraction, and vector store indexing succeed cleanly
     if not transcript or not transcript.strip():
-        print("⚠️ No speech or dialogue detected during transcription. Using fallback placeholder.")
+        print("[WARN] No speech or dialogue detected during transcription. Using fallback placeholder.")
         transcript = "[00:00] Note: No speech or dialogue was detected in this recording."
 
     # Step 3: Format transcript dialogue according to user's selected output_format
-    fmt = (output_format or "translated").lower().strip()
     if fmt in ["hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration", "hinglish"]:
-        print(f"Converting transcript dialogue to format [{fmt}]...")
-        transcript = convert_transcript_format(transcript, fmt)
+        if "No speech or dialogue was detected" not in transcript:
+            print(f"Converting transcript dialogue to format [{fmt}]...")
+            converted_transcript = convert_transcript_format(transcript, fmt)
+            if converted_transcript and converted_transcript.strip():
+                transcript = converted_transcript
+            else:
+                print(f"[WARN] Transcript format conversion to [{fmt}] returned empty text; retaining original dialogue.")
 
     print(f"Transcript ready ({len(transcript)} chars). Generating meeting insights in [{fmt}]...")
 

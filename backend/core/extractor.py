@@ -52,7 +52,7 @@ CRITICAL RULES:
     try:
         chain = prompt | get_llm(model="openai/gpt-oss-120b", max_tokens=1500) | StrOutputParser()
         result = chain.invoke({"transcript": chunk_text}).strip()
-        return result
+        return result if result else chunk_text
     except Exception as e:
         print(f"Error converting transcript chunk: {e}")
         return chunk_text
