@@ -9,7 +9,7 @@ from core.vector_store import build_vector_store, load_vector_store, get_retriev
 load_dotenv()
 
 DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-DEFAULT_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "1024"))
+DEFAULT_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "2500"))
 
 
 def _resolve_model_and_tokens(model: str = None, max_tokens: int = None):

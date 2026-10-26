@@ -96,10 +96,12 @@ def convert_meeting_insights(insights: dict, target_format: str) -> dict:
 Translate the following meeting insights into the target format:
 {lang_inst}
 
+Keep the summary concise, crisp, and high-value so it stays well within token limits.
+
 Return ONLY valid JSON in this exact structure:
 {{{{
   "title": "short translated title",
-  "summary": "detailed markdown summary in target format",
+  "summary": "concise markdown summary in target format",
   "action_items": ["item1", "item2"],
   "key_decisions": ["decision1", "decision2"],
   "open_questions": ["question1", "question2"]
@@ -118,27 +120,56 @@ Open Questions: {open_questions}"""
     ])
 
     parser = JsonOutputParser()
+    summary_input = (insights.get("summary") or "")[:4000]
+
+    converted = None
+    # Tier 1: Primary with gpt-oss-120b and max_tokens=3000
     try:
-        llm = get_llm_json(model="openai/gpt-oss-120b")
+        llm = get_llm_json(model="openai/gpt-oss-120b", max_tokens=3000)
         chain = prompt | llm | parser
         converted = chain.invoke({
             "title": insights.get("title", "Meeting"),
-            "summary": insights.get("summary", ""),
+            "summary": summary_input,
             "action_items": str(insights.get("action_items", [])),
             "key_decisions": str(insights.get("key_decisions", [])),
             "open_questions": str(insights.get("open_questions", [])),
         })
-
-        return {
-            "title": converted.get("title") or insights.get("title", "Meeting"),
-            "summary": (converted.get("summary") or insights.get("summary", "")).replace("\\n", "\n"),
-            "action_items": converted.get("action_items") if isinstance(converted.get("action_items"), list) else [],
-            "key_decisions": converted.get("key_decisions") if isinstance(converted.get("key_decisions"), list) else [],
-            "open_questions": converted.get("open_questions") if isinstance(converted.get("open_questions"), list) else [],
-        }
     except Exception as e:
-        print(f"Error converting meeting insights: {e}")
-        return insights
+        print(f"Primary insight conversion with json_object failed ({e}), attempting text parser fallback...")
+        try:
+            # Tier 2: Fallback to standard text parser with gpt-oss-120b
+            fallback_llm = get_llm(model="openai/gpt-oss-120b", max_tokens=3000)
+            chain = prompt | fallback_llm | parser
+            converted = chain.invoke({
+                "title": insights.get("title", "Meeting"),
+                "summary": summary_input,
+                "action_items": str(insights.get("action_items", [])),
+                "key_decisions": str(insights.get("key_decisions", [])),
+                "open_questions": str(insights.get("open_questions", [])),
+            })
+        except Exception as e2:
+            print(f"Secondary fallback failed ({e2}), trying gpt-oss-20b...")
+            try:
+                fallback_llm2 = get_llm(model="openai/gpt-oss-20b", max_tokens=2500)
+                chain = prompt | fallback_llm2 | parser
+                converted = chain.invoke({
+                    "title": insights.get("title", "Meeting"),
+                    "summary": summary_input[:2000],
+                    "action_items": str(insights.get("action_items", [])),
+                    "key_decisions": str(insights.get("key_decisions", [])),
+                    "open_questions": str(insights.get("open_questions", [])),
+                })
+            except Exception as final_e:
+                print(f"All insight conversion attempts failed: {final_e}")
+                return insights
+
+    return {
+        "title": converted.get("title") or insights.get("title", "Meeting"),
+        "summary": (converted.get("summary") or insights.get("summary", "")).replace("\\n", "\n"),
+        "action_items": converted.get("action_items") if isinstance(converted.get("action_items"), list) else [],
+        "key_decisions": converted.get("key_decisions") if isinstance(converted.get("key_decisions"), list) else [],
+        "open_questions": converted.get("open_questions") if isinstance(converted.get("open_questions"), list) else [],
+    }
 
 
 def extract_meeting_insights(transcript: str, output_format: str = "translated") -> dict:
@@ -187,21 +218,21 @@ Return valid JSON only. Do not wrap in markdown code blocks like ```json. Do not
     parser = JsonOutputParser()
     result = None
 
-    # Try primary structured JSON mode
+    # Try primary structured JSON mode with generous 3000 token limit
     try:
-        llm = get_llm_json()
+        llm = get_llm_json(model="openai/gpt-oss-120b", max_tokens=3000)
         chain = prompt | llm | parser
         result = chain.invoke({"transcript": transcript_prompt})
     except Exception as err:
-        print(f"Primary JSON-mode failed ({err}), falling back to gpt-oss-120b...")
+        print(f"Primary JSON-mode failed ({err}), falling back to text parser gpt-oss-120b...")
         try:
-            fallback_llm = get_llm_json(model="openai/gpt-oss-120b")
+            fallback_llm = get_llm(model="openai/gpt-oss-120b", max_tokens=3000)
             chain = prompt | fallback_llm | parser
             result = chain.invoke({"transcript": transcript_prompt})
         except Exception as err2:
             print(f"Secondary JSON fallback failed ({err2}), trying text parser with gpt-oss-20b...")
             try:
-                fallback_llm = get_llm(model="openai/gpt-oss-20b")
+                fallback_llm = get_llm(model="openai/gpt-oss-20b", max_tokens=2500)
                 chain = prompt | fallback_llm | parser
                 result = chain.invoke({"transcript": transcript_prompt})
             except Exception as final_err:
