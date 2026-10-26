@@ -30,6 +30,7 @@ class Meeting(Base):
     key_decisions = Column(Text, nullable=True)
     open_questions = Column(Text, nullable=True)
     vector_path = Column(String(255), nullable=True)
+    output_format = Column(String(50), default="translated")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

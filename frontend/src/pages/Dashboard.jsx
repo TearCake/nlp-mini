@@ -55,6 +55,9 @@ function Dashboard() {
 
   const [source, setSource] = useState("");
   const [language, setLanguage] = useState("english");
+  const [outputFormat, setOutputFormat] = useState("translated");
+  const [chatOutputFormat, setChatOutputFormat] = useState("translated");
+  const [convertingFormat, setConvertingFormat] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   const [meetings, setMeetings] = useState([]);
@@ -114,6 +117,9 @@ function Dashboard() {
     try {
       const meetingRes = await API.get(`/meetings/${meetingId}`);
       setSelectedMeeting(meetingRes.data);
+      if (meetingRes.data.output_format) {
+        setChatOutputFormat(meetingRes.data.output_format);
+      }
 
       const chatRes = await API.get(`/meetings/${meetingId}/chats`);
       setChats(chatRes.data);
@@ -122,6 +128,25 @@ function Dashboard() {
       setError("");
     } catch {
       setError("Failed to load meeting details");
+    }
+  };
+
+  const handleFormatChange = async (newFormat) => {
+    if (!selectedMeeting || (selectedMeeting.output_format || "translated") === newFormat || convertingFormat) return;
+
+    try {
+      setConvertingFormat(true);
+      setError("");
+      const res = await API.post(`/meetings/${selectedMeeting.id}/format`, {
+        output_format: newFormat,
+      });
+      setSelectedMeeting(res.data);
+      setChatOutputFormat(newFormat);
+      await fetchMeetings();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Failed to switch meeting format");
+    } finally {
+      setConvertingFormat(false);
     }
   };
 
@@ -164,6 +189,7 @@ function Dashboard() {
       const res = await API.post("/meetings/process", {
         source,
         language,
+        output_format: outputFormat,
       });
 
       await fetchMeetings();
@@ -209,7 +235,10 @@ function Dashboard() {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ question: userQuestion }),
+          body: JSON.stringify({
+            question: userQuestion,
+            output_format: chatOutputFormat,
+          }),
         }
       );
 
@@ -537,22 +566,66 @@ function Dashboard() {
                       : "Supports YouTube links and local recording files"}
                   </p>
 
-                  <div className="mt-5 flex items-center gap-3">
-                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Language
+                  <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 block mb-1.5">
+                        Spoken Audio Language
+                      </label>
+                      <select
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                        className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${
+                          darkMode
+                            ? "border-[#2A2E3A] bg-[#0A0A12] text-white"
+                            : "border-[#E7E2F5] bg-white text-slate-700"
+                        }`}
+                      >
+                        <option value="english">English</option>
+                        <option value="hinglish">Hinglish / Hindi-English</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 block mb-1.5">
+                        Selected Output Type
+                      </label>
+                      <div className="text-xs text-slate-400 mt-1">
+                        Select transcript, summary & answer script below
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 block mb-2">
+                      Output Format (Summary, Transcript & Answers)
                     </label>
-                    <select
-                      value={language}
-                      onChange={(e) => setLanguage(e.target.value)}
-                      className={`rounded-lg border px-3 py-2 text-sm outline-none ${
-                        darkMode
-                          ? "border-[#2A2E3A] bg-[#0A0A12] text-white"
-                          : "border-[#E7E2F5] bg-white text-slate-700"
-                      }`}
-                    >
-                      <option value="english">English</option>
-                      <option value="hinglish">Hinglish</option>
-                    </select>
+                    <div className="grid grid-cols-3 gap-2.5">
+                      {[
+                        { id: "translated", label: "Translated", sub: "English", icon: "🌐" },
+                        { id: "hindi", label: "Hindi Font", sub: "हिन्दी फ़ॉन्ट", icon: "🇮🇳" },
+                        { id: "romanized", label: "Romanized", sub: "Roman Hinglish", icon: "🔤" },
+                      ].map((opt) => {
+                        const isSelected = outputFormat === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setOutputFormat(opt.id)}
+                            className={`flex flex-col items-center justify-center rounded-xl border p-2.5 text-center transition ${
+                              isSelected
+                                ? "border-[#7C4DFF] bg-[#7C4DFF]/15 text-[#7C4DFF] font-semibold shadow-sm ring-1 ring-[#7C4DFF]"
+                                : darkMode
+                                ? "border-[#2A2E3A] bg-[#0A0A12] text-slate-400 hover:border-slate-600 hover:text-white"
+                                : "border-[#E7E2F5] bg-[#F6F3FB] text-slate-600 hover:border-slate-300 hover:text-slate-900"
+                            }`}
+                          >
+                            <span className="text-lg">{opt.icon}</span>
+                            <span className="text-xs font-semibold mt-1 leading-tight">{opt.label}</span>
+                            <span className="text-[10px] opacity-75 mt-0.5">{opt.sub}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <button
@@ -640,6 +713,48 @@ function Dashboard() {
                       >
                         📄 PDF
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Format Switcher */}
+                  <div className="flex flex-col gap-2 pt-2 border-t border-inherit">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        Content Script / Format
+                      </span>
+                      {convertingFormat && (
+                        <span className="text-[10px] font-bold text-[#7C4DFF] animate-pulse">
+                          Converting...
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1">
+                      {[
+                        { id: "translated", label: "English", icon: "🌐" },
+                        { id: "hindi", label: "हिन्दी", icon: "🇮🇳" },
+                        { id: "romanized", label: "Hinglish", icon: "🔤" },
+                      ].map((fmt) => {
+                        const isActive = (selectedMeeting.output_format || "translated") === fmt.id;
+                        return (
+                          <button
+                            key={fmt.id}
+                            disabled={convertingFormat}
+                            onClick={() => handleFormatChange(fmt.id)}
+                            className={`flex items-center justify-center gap-1 rounded-lg border py-1.5 text-xs font-semibold transition ${
+                              isActive
+                                ? "border-[#7C4DFF] bg-[#7C4DFF] text-white shadow-sm"
+                                : darkMode
+                                ? "border-[#2A2E3A] bg-[#0A0A12] text-slate-300 hover:border-[#7C4DFF]"
+                                : "border-[#E7E2F5] bg-[#F6F3FB] text-slate-700 hover:border-[#7C4DFF]"
+                            } disabled:opacity-50`}
+                            title={`Switch notes & transcript to ${fmt.label}`}
+                          >
+                            <span>{fmt.icon}</span>
+                            <span>{fmt.label}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -794,13 +909,45 @@ function Dashboard() {
                     darkMode ? "border-[#2A2E3A] bg-[#0A0A12]" : "border-[#E7E2F5] bg-[#F6F3FB]"
                   }`}
                 >
-                  <div className="mb-4 flex items-center justify-between">
-                    <h2 className="text-base font-bold flex items-center gap-2">
-                      <span>💬</span> Chat with this meeting
-                    </h2>
-                    <span className="text-[11px] text-slate-500">
-                      ⚡ Answers stream in real-time
-                    </span>
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b pb-3 border-inherit">
+                    <div>
+                      <h2 className="text-base font-bold flex items-center gap-2">
+                        <span>💬</span> Chat with this meeting
+                      </h2>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        💡 Ask in English, हिन्दी, or Hinglish — AI responds in your selected format
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1 rounded-xl border p-1 border-inherit bg-slate-500/5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-1.5">
+                        Output:
+                      </span>
+                      {[
+                        { id: "translated", label: "English", icon: "🌐" },
+                        { id: "hindi", label: "हिन्दी", icon: "🇮🇳" },
+                        { id: "romanized", label: "Hinglish", icon: "🔤" },
+                      ].map((f) => {
+                        const active = chatOutputFormat === f.id;
+                        return (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => setChatOutputFormat(f.id)}
+                            className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                              active
+                                ? "bg-gradient-to-r from-[#7C4DFF] to-[#FF7A59] text-white shadow-sm"
+                                : darkMode
+                                ? "text-slate-400 hover:text-white hover:bg-white/5"
+                                : "text-slate-600 hover:text-slate-900 hover:bg-black/5"
+                            }`}
+                          >
+                            <span>{f.icon}</span>
+                            <span>{f.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="space-y-4 max-h-[460px] overflow-y-auto pr-1">
@@ -858,7 +1005,7 @@ function Dashboard() {
                         }
                       }}
                       disabled={asking}
-                      placeholder="Ask questions about this meeting..."
+                      placeholder="Ask in English, हिन्दी, or Hinglish (e.g. 'Key decisions kya the?')..."
                       className={`flex-1 rounded-xl border px-4 py-2.5 text-sm outline-none transition ${
                         darkMode
                           ? "border-[#2A2E3A] bg-[#12151D] text-white placeholder:text-slate-500 focus:border-[#7C4DFF]"

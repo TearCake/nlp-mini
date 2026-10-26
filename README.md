@@ -15,12 +15,14 @@ The project is split into:
 ## Features
 
 - User registration and JWT-based login
-- Submit a YouTube URL or local media path for processing
-- Speech-to-text transcription with Whisper or the configured speech-to-text
-  provider
+- Submit a YouTube URL or local media path for processing (with instant YouTube caption fast-path)
+- Speech-to-text transcription with Whisper and Sarvam AI with speaker diarization and timestamps
+- **3 Multilingual Output Formats:** Choose between **Translated (English)**, **Hindi Font (हिन्दी फ़ॉन्ट / Devanagari)**, and **Roman Transliteration (Hinglish in Latin script)** for transcripts and meeting summaries.
+- On-the-fly meeting format conversion with live vector store synchronization
+- **Input-Agnostic AI Chatbot:** Ask questions in any format (English, हिन्दी, or Hinglish) — the assistant responds in real-time streaming in the user's selected output format.
 - Meeting title, summary, action items, key decisions, and open questions
-- Persistent meeting history backed by SQLite
-- RAG-based questions and answers over a meeting transcript
+- Download notes as formatted PDF or copy clean Markdown
+- Persistent meeting history backed by SQLite and ChromaDB
 - Search, rename, and delete saved meetings
 - Light and dark dashboard modes
 - Interactive FastAPI documentation at `/docs`

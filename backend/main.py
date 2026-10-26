@@ -9,14 +9,14 @@ if sys.platform == "win32":
 
 from utils.audio_processor import process_input, fetch_youtube_transcript_fast, cleanup_files
 from core.transcriber import transcribe_all, diarize_transcript
-from core.extractor import extract_meeting_insights
+from core.extractor import extract_meeting_insights, convert_transcript_format
 from core.rag_engine import build_rag_chain, ask_questions
 
 load_dotenv()
 
 
-def run_pipeline(source: str, language: str = "english", meeting_id: str = None) -> dict:
-    print(f"Starting AI Video Assistant pipeline for meeting [{meeting_id}]...")
+def run_pipeline(source: str, language: str = "english", output_format: str = "translated", meeting_id: str = None) -> dict:
+    print(f"Starting AI Video Assistant pipeline for meeting [{meeting_id}] with output format [{output_format}]...")
 
     transcript = None
 
@@ -39,10 +39,16 @@ def run_pipeline(source: str, language: str = "english", meeting_id: str = None)
         finally:
             cleanup_files(to_cleanup)
 
-    print(f"Transcript ready ({len(transcript)} chars). Generating meeting insights...")
+    # Step 3: Format transcript dialogue according to user's selected output_format
+    fmt = (output_format or "translated").lower().strip()
+    if fmt in ["hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration", "hinglish"]:
+        print(f"Converting transcript dialogue to format [{fmt}]...")
+        transcript = convert_transcript_format(transcript, fmt)
 
-    # Step 3: Extract structured insights (Title, Summary, Action items, Key decisions, Questions)
-    insights = extract_meeting_insights(transcript)
+    print(f"Transcript ready ({len(transcript)} chars). Generating meeting insights in [{fmt}]...")
+
+    # Step 4: Extract structured insights (Title, Summary, Action items, Key decisions, Questions)
+    insights = extract_meeting_insights(transcript, output_format=fmt)
 
     title = insights.get("title", "Meeting Workspace")
     summary = insights.get("summary", "")
@@ -50,9 +56,9 @@ def run_pipeline(source: str, language: str = "english", meeting_id: str = None)
     key_decisions = insights.get("key_decisions", [])
     open_questions = insights.get("open_questions", [])
 
-    # Step 4: Index into vector store for RAG chat
+    # Step 5: Index into vector store for RAG chat
     print(f"Indexing transcript into vector store for meeting [{meeting_id}]...")
-    build_rag_chain(transcript, meeting_id)
+    build_rag_chain(transcript, meeting_id, output_format=fmt)
 
     return {
         "meeting_id": meeting_id,
@@ -62,6 +68,7 @@ def run_pipeline(source: str, language: str = "english", meeting_id: str = None)
         "action_items": action_items,
         "key_decisions": key_decisions,
         "open_questions": open_questions,
+        "output_format": fmt,
     }
 
 

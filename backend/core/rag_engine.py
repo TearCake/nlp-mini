@@ -48,15 +48,43 @@ def format_docs(docs):
     return "\n\n".join([doc.page_content for doc in docs])
 
 
-def build_rag_chain(transcript: str, meeting_id: str, model: str = None):
+def get_language_instruction(output_format: str = "translated") -> str:
+    fmt = (output_format or "translated").lower().strip()
+    if fmt in ["hindi", "hindi_font", "devanagari"]:
+        return (
+            "LANGUAGE REQUIREMENT:\n"
+            "- The user may ask questions in English, Hindi (Devanagari), or Roman Hinglish.\n"
+            "- Regardless of the user's input language, you MUST ALWAYS formulate your answer ENTIRELY in natural Hindi using Devanagari script (हिन्दी फ़ॉन्ट).\n"
+            "- You may keep essential technical terms (e.g. API, Server, Git, Database) in standard English or phonetic script where helpful.\n"
+            "- Format beautifully with bullet points and bold text."
+        )
+    elif fmt in ["romanized", "roman_transliteration", "hinglish"]:
+        return (
+            "LANGUAGE REQUIREMENT:\n"
+            "- The user may ask questions in English, Hindi (Devanagari), or Roman Hinglish.\n"
+            "- Regardless of the user's input language, you MUST ALWAYS formulate your answer in natural conversational Hinglish using Roman / Latin script (e.g., 'API ek bridge ki tarah kaam karta hai jo do apps ko connect karta hai...').\n"
+            "- Do NOT use Devanagari script; write in Roman script as used in everyday Indian messaging and tech conversations.\n"
+            "- Format clearly with bullet points and bold highlights."
+        )
+    else:
+        return (
+            "LANGUAGE REQUIREMENT:\n"
+            "- The user may ask questions in English, Hindi (Devanagari), or Roman Hinglish.\n"
+            "- Regardless of the user's input language, you MUST ALWAYS formulate your answer in clear, professional English.\n"
+            "- Format clearly with bullet points and bold highlights."
+        )
+
+
+def build_rag_chain(transcript: str, meeting_id: str, model: str = None, output_format: str = "translated"):
     vector_store = build_vector_store(transcript, meeting_id)
     retriever = get_retriever(vector_store, k=4)
     llm = get_llm(model=model)
+    lang_rule = get_language_instruction(output_format)
 
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            """You are an expert meeting assistant. Answer the user's question 
+            f"""You are an expert meeting assistant. Answer the user's question 
 based ONLY on the meeting transcript context provided below.
 
 If the answer is not found in the context, say: 
@@ -64,8 +92,10 @@ If the answer is not found in the context, say:
 
 Always be concise and precise. If quoting someone, mention it clearly.
 
+{lang_rule}
+
 Context from meeting transcript:
-{context}""",
+{{context}}""",
         ),
         ("human", "{question}"),
     ])
@@ -83,15 +113,16 @@ Context from meeting transcript:
     return rag_chain
 
 
-def load_rag_chain(meeting_id: str, model: str = None):
+def load_rag_chain(meeting_id: str, model: str = None, output_format: str = "translated"):
     vector_store = load_vector_store(meeting_id)
     retriever = get_retriever(vector_store)
     llm = get_llm(model=model)
+    lang_rule = get_language_instruction(output_format)
 
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            """You are an expert meeting assistant. Answer the user's question 
+            f"""You are an expert meeting assistant. Answer the user's question 
 based ONLY on the meeting transcript context provided below.
 
 If the answer is not found in the context, say: 
@@ -99,8 +130,10 @@ If the answer is not found in the context, say:
 
 Always be concise and precise. If quoting someone, mention it clearly.
 
+{lang_rule}
+
 Context from meeting transcript:
-{context}""",
+{{context}}""",
         ),
         ("human", "{question}"),
     ])

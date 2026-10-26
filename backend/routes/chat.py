@@ -15,13 +15,14 @@ router = APIRouter(prefix="/meetings", tags=["Chat"])
 
 class QuestionRequest(BaseModel):
     question: str
+    output_format: str = "translated"
 
 
-def get_or_create_rag_chain(meeting_id: int, transcript: str):
+def get_or_create_rag_chain(meeting_id: int, transcript: str, output_format: str = "translated"):
     persist_dir = os.path.join(BASE_CHROMA_DIR, str(meeting_id))
     if (not os.path.exists(persist_dir) or not os.listdir(persist_dir)) and transcript:
         build_vector_store(transcript, str(meeting_id))
-    return load_rag_chain(str(meeting_id))
+    return load_rag_chain(str(meeting_id), output_format=output_format)
 
 
 @router.post("/{meeting_id}/ask")
@@ -47,14 +48,14 @@ def ask_meeting(
         )
 
     try:
-        rag_chain = get_or_create_rag_chain(meeting.id, meeting.transcript or "")
+        rag_chain = get_or_create_rag_chain(meeting.id, meeting.transcript or "", output_format=req.output_format)
         answer = ask_questions(
             rag_chain,
             req.question
         )
     except Exception as e:
         try:
-            fallback_chain = load_rag_chain(str(meeting_id), model="openai/gpt-oss-20b")
+            fallback_chain = load_rag_chain(str(meeting_id), model="openai/gpt-oss-20b", output_format=req.output_format)
             answer = ask_questions(fallback_chain, req.question)
         except Exception:
             raise HTTPException(
@@ -104,7 +105,7 @@ def ask_meeting_stream(
             detail="Meeting not found"
         )
 
-    rag_chain = get_or_create_rag_chain(meeting.id, meeting.transcript or "")
+    rag_chain = get_or_create_rag_chain(meeting.id, meeting.transcript or "", output_format=req.output_format)
 
     def generate():
         tokens = []
@@ -116,7 +117,7 @@ def ask_meeting_stream(
             error_str = str(e)
             print(f"Streaming error on primary model: {error_str}")
             try:
-                fallback_chain = load_rag_chain(str(meeting_id), model="openai/gpt-oss-20b")
+                fallback_chain = load_rag_chain(str(meeting_id), model="openai/gpt-oss-20b", output_format=req.output_format)
                 for chunk in fallback_chain.stream(req.question):
                     tokens.append(chunk)
                     yield chunk

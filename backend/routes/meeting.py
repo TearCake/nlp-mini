@@ -21,6 +21,11 @@ class RenameMeetingRequest(BaseModel):
 class MeetingRequest(BaseModel):
     source: str
     language: str = "english"
+    output_format: str = "translated"
+
+
+class FormatMeetingRequest(BaseModel):
+    output_format: str
 
 
 @router.post("/process")
@@ -32,7 +37,8 @@ def process_meeting(
     # Step 1: create initial meeting record
     new_meeting = Meeting(
         user_id=current_user.id,
-        source=req.source
+        source=req.source,
+        output_format=req.output_format
     )
 
     db.add(new_meeting)
@@ -46,6 +52,7 @@ def process_meeting(
         result = run_pipeline(
             source=req.source,
             language=req.language,
+            output_format=req.output_format,
             meeting_id=meeting_id
         )
     except Exception as e:
@@ -64,6 +71,7 @@ def process_meeting(
     new_meeting.key_decisions = json.dumps(result["key_decisions"])
     new_meeting.open_questions = json.dumps(result["open_questions"])
     new_meeting.vector_path = f"vector_db/{meeting_id}"
+    new_meeting.output_format = result.get("output_format", req.output_format)
 
     db.commit()
     db.refresh(new_meeting)
@@ -76,6 +84,7 @@ def process_meeting(
         "action_items": json.loads(new_meeting.action_items),
         "key_decisions": json.loads(new_meeting.key_decisions),
         "open_questions": json.loads(new_meeting.open_questions),
+        "output_format": new_meeting.output_format,
     }
 
 
@@ -96,6 +105,7 @@ def get_meetings(
             "id": meeting.id,
             "title": meeting.title,
             "source": meeting.source,
+            "output_format": meeting.output_format or "translated",
             "created_at": meeting.created_at,
             "chat_count": len(meeting.chats)
         }
@@ -133,8 +143,99 @@ def get_single_meeting(
         "action_items": json.loads(meeting.action_items or "[]"),
         "key_decisions": json.loads(meeting.key_decisions or "[]"),
         "open_questions": json.loads(meeting.open_questions or "[]"),
+        "output_format": meeting.output_format or "translated",
         "created_at": meeting.created_at,
     }
+
+
+@router.post("/{meeting_id}/format")
+def change_meeting_format(
+    meeting_id: int,
+    req: FormatMeetingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    meeting = (
+        db.query(Meeting)
+        .filter(
+            Meeting.id == meeting_id,
+            Meeting.user_id == current_user.id
+        )
+        .first()
+    )
+
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Meeting not found"
+        )
+
+    target_fmt = req.output_format.lower().strip()
+    current_fmt = (meeting.output_format or "translated").lower().strip()
+
+    if target_fmt == current_fmt:
+        return {
+            "id": meeting.id,
+            "title": meeting.title,
+            "source": meeting.source,
+            "transcript": meeting.transcript,
+            "summary": meeting.summary,
+            "action_items": json.loads(meeting.action_items or "[]"),
+            "key_decisions": json.loads(meeting.key_decisions or "[]"),
+            "open_questions": json.loads(meeting.open_questions or "[]"),
+            "output_format": meeting.output_format or "translated",
+            "created_at": meeting.created_at,
+        }
+
+    try:
+        from core.extractor import convert_meeting_insights, convert_transcript_format
+        from core.vector_store import build_vector_store
+
+        # 1. Convert transcript dialogue while preserving timestamps and speakers
+        converted_transcript = convert_transcript_format(meeting.transcript or "", target_fmt)
+
+        # 2. Convert meeting insights
+        current_insights = {
+            "title": meeting.title or "Meeting",
+            "summary": meeting.summary or "",
+            "action_items": json.loads(meeting.action_items or "[]"),
+            "key_decisions": json.loads(meeting.key_decisions or "[]"),
+            "open_questions": json.loads(meeting.open_questions or "[]"),
+        }
+        converted_insights = convert_meeting_insights(current_insights, target_fmt)
+
+        meeting.title = converted_insights["title"]
+        meeting.summary = converted_insights["summary"]
+        meeting.action_items = json.dumps(converted_insights["action_items"])
+        meeting.key_decisions = json.dumps(converted_insights["key_decisions"])
+        meeting.open_questions = json.dumps(converted_insights["open_questions"])
+        meeting.transcript = converted_transcript
+        meeting.output_format = target_fmt
+
+        db.commit()
+        db.refresh(meeting)
+
+        # 3. Update vector store
+        if meeting.transcript:
+            build_vector_store(meeting.transcript, str(meeting.id))
+
+        return {
+            "id": meeting.id,
+            "title": meeting.title,
+            "source": meeting.source,
+            "transcript": meeting.transcript,
+            "summary": meeting.summary,
+            "action_items": json.loads(meeting.action_items or "[]"),
+            "key_decisions": json.loads(meeting.key_decisions or "[]"),
+            "open_questions": json.loads(meeting.open_questions or "[]"),
+            "output_format": meeting.output_format,
+            "created_at": meeting.created_at,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to change format: {str(e)}"
+        )
 
 
 @router.delete("/{meeting_id}")
