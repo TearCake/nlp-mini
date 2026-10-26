@@ -249,6 +249,9 @@ def transcribe_all(chunks: list, language: str = "english") -> str:
             accumulated_seconds += 10.0 * 60.0
 
     raw_transcript = "\n".join(full_transcript_parts).strip()
+    if not raw_transcript:
+        print("No dialogue lines detected in audio chunks.")
+        return ""
 
     print("Running speaker diarization pass...")
     diarized_transcript = diarize_transcript(raw_transcript)

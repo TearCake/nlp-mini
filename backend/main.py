@@ -39,6 +39,12 @@ def run_pipeline(source: str, language: str = "english", output_format: str = "t
         finally:
             cleanup_files(to_cleanup)
 
+    # Ensure transcript is never empty so downstream format conversion,
+    # insight extraction, and vector store indexing succeed cleanly
+    if not transcript or not transcript.strip():
+        print("⚠️ No speech or dialogue detected during transcription. Using fallback placeholder.")
+        transcript = "[00:00] Note: No speech or dialogue was detected in this recording."
+
     # Step 3: Format transcript dialogue according to user's selected output_format
     fmt = (output_format or "translated").lower().strip()
     if fmt in ["hindi", "hindi_font", "devanagari", "romanized", "roman_transliteration", "hinglish"]:

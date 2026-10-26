@@ -173,10 +173,10 @@ Open Questions: {open_questions}"""
 
 
 def extract_meeting_insights(transcript: str, output_format: str = "translated") -> dict:
-    if not transcript or not transcript.strip():
+    if not transcript or not transcript.strip() or "No speech or dialogue was detected" in transcript:
         return {
-            "title": "Untitled Meeting",
-            "summary": "No speech detected in this recording.",
+            "title": "Recording Workspace",
+            "summary": "No spoken dialogue or speech was detected in this video or audio recording. Please check that the uploaded file contains an audible audio track.",
             "action_items": [],
             "key_decisions": [],
             "open_questions": []

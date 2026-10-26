@@ -23,7 +23,13 @@ def build_vector_store(transcript: str, meeting_id: str) -> Chroma:
         chunk_overlap=50
     )
 
-    chunks = splitter.split_text(transcript)
+    clean_text = transcript.strip() if transcript else ""
+    if not clean_text:
+        clean_text = "No spoken dialogue or speech was detected in this recording."
+
+    chunks = splitter.split_text(clean_text)
+    if not chunks:
+        chunks = [clean_text]
 
     docs = [
         Document(page_content=chunk, metadata={"meeting_id": meeting_id, "chunk_index": i})
