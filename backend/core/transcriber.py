@@ -59,7 +59,7 @@ def transcribe_chunk_whisper(chunk_path: str, time_offset_sec: float = 0.0) -> s
 
 
 def _send_to_sarvam(piece_path: str) -> str:
-    """Send one <=30s WAV file to Sarvam with diarization and return English transcript."""
+    """Send one <=30s WAV file to Sarvam and return English translated transcript."""
     api_key = os.getenv("SARVAM_API_KEY") or SARVAM_API_KEY
     if not api_key:
         raise RuntimeError("SARVAM_API_KEY is not set in environment / .env")
@@ -70,7 +70,6 @@ def _send_to_sarvam(piece_path: str) -> str:
         files = {"file": (os.path.basename(piece_path), f, "audio/wav")}
         data = {
             "model": os.getenv("SARVAM_STT_MODEL", "saaras:v2.5"),
-            "with_diarization": "true"
         }
         response = requests.post(
             SARVAM_STT_TRANSLATE_URL,
@@ -85,25 +84,13 @@ def _send_to_sarvam(piece_path: str) -> str:
         response.raise_for_status()
 
     res_json = response.json()
-    # Check if diarized transcript or plain transcript
-    diarized = res_json.get("diarized_transcript")
-    if diarized and isinstance(diarized, list):
-        diarized_lines = []
-        for entry in diarized:
-            spk = entry.get("speaker_id", "Speaker")
-            txt = entry.get("transcript", "").strip()
-            if txt:
-                diarized_lines.append(f"{spk}: {txt}")
-        if diarized_lines:
-            return "\n".join(diarized_lines)
-
-    return res_json.get("transcript", "")
+    return res_json.get("transcript", "").strip()
 
 
 def transcribe_chunk_sarvam(chunk_path: str, time_offset_sec: float = 0.0) -> str:
     """
     Sarvam sync API only accepts <=30s audio. We split this chunk into
-    25-second pieces, send each separately with diarization, and join with timestamps.
+    25-second pieces, translate each with Sarvam, and join with timestamps.
     """
     audio = AudioSegment.from_wav(chunk_path)
     piece_ms = SARVAM_PIECE_SECONDS * 1000
@@ -134,7 +121,11 @@ def transcribe_chunk_sarvam(chunk_path: str, time_offset_sec: float = 0.0) -> st
 def transcribe_chunk(chunk_path: str, language: str = "english", time_offset_sec: float = 0.0) -> str:
     """Route one chunk to Whisper or Sarvam depending on language choice."""
     if language.lower() == "hinglish":
-        return transcribe_chunk_sarvam(chunk_path, time_offset_sec=time_offset_sec)
+        try:
+            return transcribe_chunk_sarvam(chunk_path, time_offset_sec=time_offset_sec)
+        except Exception as e:
+            print(f"⚠️ Sarvam transcription failed ({e}), falling back to Whisper...")
+            return transcribe_chunk_whisper(chunk_path, time_offset_sec=time_offset_sec)
     return transcribe_chunk_whisper(chunk_path, time_offset_sec=time_offset_sec)
 
 
