@@ -97,6 +97,7 @@ def run_pipeline(source: str, language: str = "english", output_format: str = "t
         "meeting_id": meeting_id,
         "title": title,
         "transcript": transcript,
+        "original_transcript": transcript,
         "summary": summary,
         "action_items": action_items,
         "key_decisions": key_decisions,

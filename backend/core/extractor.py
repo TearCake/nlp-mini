@@ -50,7 +50,7 @@ CRITICAL RULES:
     ])
 
     try:
-        chain = prompt | get_llm(model="openai/gpt-oss-120b", max_tokens=1500) | StrOutputParser()
+        chain = prompt | get_llm(model="openai/gpt-oss-120b", max_tokens=3000) | StrOutputParser()
         result = chain.invoke({"transcript": chunk_text}).strip()
         return result if result else chunk_text
     except Exception as e:
@@ -59,7 +59,7 @@ CRITICAL RULES:
 
 
 def convert_transcript_format(transcript: str, target_format: str) -> str:
-    """Converts transcript dialogue into translated English, Hindi font (Devanagari), or Roman Hinglish."""
+    """Converts transcript dialogue into translated English, Hindi font (Devanagari), or Roman Hinglish without losing dialogue lines."""
     if not transcript or not transcript.strip():
         return transcript
 
@@ -71,8 +71,8 @@ def convert_transcript_format(transcript: str, target_format: str) -> str:
     if not lines:
         return transcript
 
-    # Process in batches of 25 lines to avoid token and output length limits
-    batch_size = 25
+    # Process in safe batches of 10 lines to ensure no lines are dropped or truncated by LLM reasoning
+    batch_size = 10
     converted_parts = []
 
     for i in range(0, len(lines), batch_size):
@@ -85,23 +85,26 @@ def convert_transcript_format(transcript: str, target_format: str) -> str:
 
 
 def convert_meeting_insights(insights: dict, target_format: str) -> dict:
-    """Converts an existing meeting's title, summary, action_items, key_decisions, and questions to target format."""
+    """Converts an existing meeting's title, summary, action_items, key_decisions, and questions to target format without losing information."""
     fmt = (target_format or "translated").lower().strip()
     lang_inst = get_format_instruction(fmt)
 
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            f"""You are an expert meeting translator.
+            f"""You are an expert meeting and document translator.
 Translate the following meeting insights into the target format:
 {lang_inst}
 
-Keep the summary concise, crisp, and high-value so it stays well within token limits.
+CRITICAL PRESERVATION REQUIREMENTS:
+1. Translate and preserve EVERY SINGLE section, header, bullet point, technical explanation, and detail thoroughly.
+2. Strictly DO NOT shorten, compress, summarize, or omit any information from the original summary.
+3. Keep all formatting (markdown headings, bullet points, bold key terms) intact.
 
 Return ONLY valid JSON in this exact structure:
 {{{{
   "title": "short translated title",
-  "summary": "concise markdown summary in target format",
+  "summary": "comprehensive markdown summary in target format preserving all original points",
   "action_items": ["item1", "item2"],
   "key_decisions": ["decision1", "decision2"],
   "open_questions": ["question1", "question2"]
@@ -120,12 +123,12 @@ Open Questions: {open_questions}"""
     ])
 
     parser = JsonOutputParser()
-    summary_input = (insights.get("summary") or "")[:4000]
+    summary_input = (insights.get("summary") or "")[:25000]
 
     converted = None
-    # Tier 1: Primary with gpt-oss-120b and max_tokens=3000
+    # Tier 1: Primary with gpt-oss-120b and max_tokens=4000
     try:
-        llm = get_llm_json(model="openai/gpt-oss-120b", max_tokens=3000)
+        llm = get_llm_json(model="openai/gpt-oss-120b", max_tokens=4000)
         chain = prompt | llm | parser
         converted = chain.invoke({
             "title": insights.get("title", "Meeting"),
@@ -138,7 +141,7 @@ Open Questions: {open_questions}"""
         print(f"Primary insight conversion with json_object failed ({e}), attempting text parser fallback...")
         try:
             # Tier 2: Fallback to standard text parser with gpt-oss-120b
-            fallback_llm = get_llm(model="openai/gpt-oss-120b", max_tokens=3000)
+            fallback_llm = get_llm(model="openai/gpt-oss-120b", max_tokens=4000)
             chain = prompt | fallback_llm | parser
             converted = chain.invoke({
                 "title": insights.get("title", "Meeting"),
@@ -150,11 +153,11 @@ Open Questions: {open_questions}"""
         except Exception as e2:
             print(f"Secondary fallback failed ({e2}), trying gpt-oss-20b...")
             try:
-                fallback_llm2 = get_llm(model="openai/gpt-oss-20b", max_tokens=2500)
+                fallback_llm2 = get_llm(model="openai/gpt-oss-20b", max_tokens=3000)
                 chain = prompt | fallback_llm2 | parser
                 converted = chain.invoke({
                     "title": insights.get("title", "Meeting"),
-                    "summary": summary_input[:2000],
+                    "summary": summary_input,
                     "action_items": str(insights.get("action_items", [])),
                     "key_decisions": str(insights.get("key_decisions", [])),
                     "open_questions": str(insights.get("open_questions", [])),
@@ -212,21 +215,21 @@ Return valid JSON only. Do not wrap in markdown code blocks like ```json. Do not
         ("human", "Transcript:\n\n{transcript}")
     ])
 
-    # Truncate very long transcripts to ~15,000 chars to avoid token limits
-    transcript_prompt = transcript[:15000] if len(transcript) > 15000 else transcript
+    # Support long meeting transcripts up to ~60,000 chars without dropping sections
+    transcript_prompt = transcript[:60000] if len(transcript) > 60000 else transcript
 
     parser = JsonOutputParser()
     result = None
 
-    # Try primary structured JSON mode with generous 3000 token limit
+    # Try primary structured JSON mode with generous 4000 token limit
     try:
-        llm = get_llm_json(model="openai/gpt-oss-120b", max_tokens=3000)
+        llm = get_llm_json(model="openai/gpt-oss-120b", max_tokens=4000)
         chain = prompt | llm | parser
         result = chain.invoke({"transcript": transcript_prompt})
     except Exception as err:
         print(f"Primary JSON-mode failed ({err}), falling back to text parser gpt-oss-120b...")
         try:
-            fallback_llm = get_llm(model="openai/gpt-oss-120b", max_tokens=3000)
+            fallback_llm = get_llm(model="openai/gpt-oss-120b", max_tokens=4000)
             chain = prompt | fallback_llm | parser
             result = chain.invoke({"transcript": transcript_prompt})
         except Exception as err2:

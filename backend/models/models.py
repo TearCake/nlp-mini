@@ -32,6 +32,8 @@ class Meeting(Base):
     vector_path = Column(String(255), nullable=True)
     language = Column(String(50), default="english")
     output_format = Column(String(50), default="translated")
+    original_transcript = Column(Text, nullable=True)
+    formats_data = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
